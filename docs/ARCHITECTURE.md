@@ -2170,3 +2170,145 @@ inteligente" etiquetada `local` en el panel, generando recomendaciones
 reales exactamente igual que antes de este paso — el servidor nuevo existe
 en el repositorio pero no altera en absoluto el comportamiento del perfil
 demo ni del de producción, ninguno de los cuales lo invoca hoy.
+
+## Flujo conversacional real con Gemini (Fase 4, Paso 5)
+
+### Qué significa "conversacional" en este paso (aclarado antes de implementar)
+
+Antes de escribir código se resolvieron tres ambigüedades directamente con
+el usuario: (1) "flujo conversacional" significa las 5 habilidades ya
+existentes del contrato de `response-provider.js`, respondidas por Gemini
+real en vez de simuladas — **no** se agrega un modo de chat multi-turno con
+historial, eso habría sido un contrato nuevo, fuera de alcance; (2) la QA
+sigue siendo 100% simulada, sin `GEMINI_API_KEY` real ni costo, mismo
+criterio que el Paso 4; (3) el feature flag permanece desactivado en los
+tres perfiles — ningún comportamiento por defecto cambia. Con esas tres
+respuestas, el trabajo de este paso se concentra en **finalizar la
+construcción del prompt** y en **ampliar la validación end-to-end** a las 5
+habilidades (el Paso 4 solo había probado el flujo completo con una,
+"Venta cruzada").
+
+### `server/gemini-prompt-builder.js` — la construcción del prompt, extraída y endurecida
+
+`buildPrompt()`/`SKILL_SCHEMAS` se extrajeron de `gemini-proxy-server.js` a
+su propio archivo — misma disciplina de una responsabilidad por módulo que
+ya rige el resto del proyecto (Context Builder vs. Response Provider,
+PromptContextBuilder vs. LocalResponseProvider). Lo verdaderamente nuevo es
+`SKILL_GROUNDING_HINTS`: una instrucción específica por habilidad, además
+de la regla genérica "no inventes datos" que ya existía desde el Paso 4.
+
+La razón concreta: "Mejor alternativa" y "Venta cruzada" reciben sus
+candidatos ya **pre-filtrados** por `PromptContextBuilder` según la
+política R-PIG-04 (excluir confianza Baja — ver Fase 4, Paso 2). Sin una
+instrucción explícita, nada le impide al modelo "mejorar" la respuesta
+sugiriendo un producto que no está en esa lista ya filtrada — deshaciendo
+esa política de negocio en silencio, en la capa que menos control
+determinístico tiene sobre el resultado. Los cinco *grounding hints*:
+
+- **explain-product**: usar `productKnowledge`/`commercialContext`; decir
+  honestamente cuando no hay disponibilidad, sin inventar precio ni stock.
+- **compare-products**: el `PromptContext` trae DOS productos
+  independientes en `a`/`b` — no mezclar datos de uno con el otro.
+- **best-alternative**: la alternativa devuelta debe ser EXACTAMENTE uno de
+  los candidatos ya listados en `alternatives` — nunca uno fuera de esa
+  lista, "aunque parezca más adecuado".
+- **cross-sell**: las recomendaciones deben ser EXCLUSIVAMENTE candidatos
+  ya listados en `crossSell` — mismo principio.
+- **price-availability**: si `commercialContext.disponibilidad` es `false`,
+  la respuesta debe declarar `disponible:false` con los campos numéricos en
+  `null` — nunca reportar disponibilidad que el contexto no confirma.
+
+### La instrucción del prompt es defensa en profundidad, no la única barrera
+
+Un prompt bien escrito reduce cuántas respuestas necesitan corrección, pero
+no es una garantía — los LLM pueden ignorar instrucciones. Por eso
+`gemini-proxy-server.js` gana una segunda capa, ejecutada DESPUÉS de recibir
+la respuesta del modelo, antes de devolverla al cliente:
+
+```js
+validateGroundedSkuUsage(skill, promptContext, parsed)
+// best-alternative: rechaza si alternativa.sku no está en promptContext.alternatives
+// cross-sell: rechaza si CUALQUIER recomendación.sku no está en promptContext.crossSell
+
+validateAvailabilityConsistency(skill, promptContext, parsed)
+// price-availability: rechaza disponible:true cuando
+// promptContext.commercialContext.disponibilidad === false
+```
+
+Ambas se tratan exactamente igual que un `skill` que no coincide (ya
+existente desde el Paso 4): lanzan, `callGemini()` rechaza, y
+`RemoteResponseProvider` cae automáticamente a `LocalResponseProvider` — el
+mismo mecanismo de fallback de siempre, ahora también protegiendo contra
+una violación de grounding, no solo contra errores de transporte. Esto es
+lo que convierte "el modelo puede alucinar un SKU" de un riesgo real en un
+fallback silencioso y seguro, verificado explícitamente en QA con un sku
+inventado que el proxy rechaza sin que llegue nunca al panel del Copilot.
+
+### Por qué la validación no cubre los 5 skills por igual
+
+`explain-product` y `compare-products` no tienen una lista cerrada de
+candidatos contra la cual validar (son texto/comparación libre sobre datos
+ya dados, no una elección entre opciones enumeradas) — no hay un "sku
+inventado" posible que detectar ahí de la misma forma. Extender la
+validación a esos dos habría significado inventar una regla sin una
+violación real y concreta que prevenir — la misma disciplina de "no
+construir código especulativo" que ya rige el resto del proyecto.
+
+### QA — Gemini Prompt Builder (nueva) y Gemini Proxy Server (ampliada)
+
+**`scripts/verify-gemini-prompt-builder.js`** (nuevo) — **17/17 checks**:
+define exactamente las 5 habilidades en `SKILL_SCHEMAS`/`SKILL_GROUNDING_HINTS`;
+cada `buildPrompt(skill, ...)` incluye el skill solicitado, su schema, la
+regla genérica y su propia instrucción de grounding — y verificado
+explícitamente que NO incluye la instrucción de ninguna otra habilidad;
+`best-alternative`/`cross-sell` prohíben explícitamente elegir fuera de sus
+listas; `price-availability` exige consistencia con `disponibilidad`;
+`compare-products` explica la estructura `a`/`b`; el prompt es
+determinístico (función pura); un skill desconocido no crashea.
+
+**`scripts/verify-gemini-proxy-server.js`** ganó, sobre los 17 checks del
+Paso 4, 5 checks nuevos — **22/22 checks OK**:
+
+18. `validateGroundedSkuUsage()`: rechaza una alternativa/recomendación con
+    un sku fuera de los candidatos reales; acepta skus reales; no lanza
+    ante listas vacías o `encontrado:false`.
+19. `validateAvailabilityConsistency()`: rechaza `disponible:true` cuando
+    el contexto real indica sin cobertura; acepta el caso consistente; no
+    aplica a otras habilidades.
+20. **END-TO-END actualizado**: el test heredado del Paso 4 usaba un sku
+    inventado (`'999'`) para "Venta cruzada" — con la validación nueva, eso
+    ahora se rechaza correctamente (el test viejo habría fallado). Se
+    corrigió para calcular, de un producto real del catálogo, un candidato
+    real de `crossSell` y usar ESE sku en la respuesta simulada del modelo.
+21. **END-TO-END (grounding)**: un sku de `crossSell` inventado por el
+    "Gemini" simulado se rechaza y cae a Local — verificado que la
+    respuesta que llega al cliente nunca trae `source:'gemini'` en ese
+    caso.
+22. **END-TO-END (5 habilidades)**: cada una de las 5 habilidades, con un
+    `PromptContext` real construido desde el catálogo real, recibe
+    correctamente una respuesta remota `source:'gemini'` a través de HTTP
+    real de punta a punta — no solo "Venta cruzada" como en el Paso 4.
+
+Resultado: **22/22** en `verify-gemini-proxy-server.js`, **17/17** en
+`verify-gemini-prompt-builder.js`. Se volvieron a correr las 10 suites
+restantes en el mismo momento —
+`scripts/verify-context-builder.js` (**10/10**),
+`scripts/verify-commercial-data.js` (**8/8**),
+`scripts/verify-response-provider.js` (**9/9**),
+`scripts/verify-compare-products.js` (**10/10**),
+`scripts/verify-best-alternative.js` (**10/10**),
+`scripts/verify-cross-sell.js` (**10/10**),
+`scripts/verify-price-availability.js` (**12/12**),
+`scripts/verify-ai-provider-abstraction.js` (**10/10**),
+`scripts/verify-prompt-context-builder.js` (**17/17**) y
+`scripts/verify-remote-response-provider.js` (**15/15**) — cero regresión
+sobre las Fases 2, 3 y 4 · Pasos 1-4. **Total: 160/160 checks.**
+
+Verificación adicional fuera de Node/QA: el servidor, ya con
+`gemini-prompt-builder.js` extraído, se volvió a arrancar como proceso
+independiente real y respondió correctamente por HTTP real (`curl`).
+Verificación en navegador (perfil demo): sin errores de consola,
+`ResponseProvider.get() === LocalResponseProvider` sin cambios — este paso
+no modificó ningún archivo servido al navegador (`assets/js/`), solo
+`server/` y `scripts/`, así que no había ningún comportamiento de UI que
+pudiera haber cambiado.

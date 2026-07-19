@@ -98,6 +98,7 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin build step. La
 │   └── commercial-data.js.example # Plantilla del formato de datos comerciales (1 registro de muestra)
 ├── server/                        # Fase 4 — única excepción a "sin backend"; opcional, desactivado por defecto
 │   ├── gemini-proxy-server.js     # Proxy Node: única pieza que conoce la API real de Gemini y lee GEMINI_API_KEY
+│   ├── gemini-prompt-builder.js   # Construcción del prompt final por habilidad, con grounding específico (Fase 4, Paso 5)
 │   └── .env.example               # Plantilla de variables de entorno — sin ningún secreto real
 ├── scripts/
 │   ├── generate-demo-data.js        # Genera assets/js/data.js a partir de production/data.js
@@ -112,7 +113,8 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin build step. La
 │   ├── verify-ai-provider-abstraction.js # QA headless (Node) del contrato de proveedores y del placeholder de IA (Fase 4)
 │   ├── verify-prompt-context-builder.js  # QA headless (Node) del Prompt Context Builder (Fase 4)
 │   ├── verify-remote-response-provider.js # QA headless (Node) del Remote Response Provider: integración, fallback, timeout y flag desactivado (Fase 4)
-│   └── verify-gemini-proxy-server.js      # QA headless (Node) del Gemini Proxy Server: servidor HTTP real + end-to-end con RemoteResponseProvider (Fase 4)
+│   ├── verify-gemini-proxy-server.js      # QA headless (Node) del Gemini Proxy Server: servidor HTTP real, grounding y end-to-end con las 5 habilidades (Fase 4)
+│   └── verify-gemini-prompt-builder.js    # QA headless (Node) del Gemini Prompt Builder: schema y grounding por habilidad (Fase 4)
 └── docs/
     ├── PROJECT_BRIEF.md           # Objetivo, dominio, alcance y supuestos del MVP; estado de las Fases 2-4
     ├── ARCHITECTURE.md            # Arquitectura del AI Sales Copilot y de los datos comerciales (Fases 2-4)

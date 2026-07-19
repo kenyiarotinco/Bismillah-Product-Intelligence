@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* Bismillah Product Intelligence Platform — Gemini Proxy Server (Fase 4, Paso 4)
+/* Bismillah Product Intelligence Platform — Gemini Proxy Server (Fase 4, Pasos 4-5)
  *
  * Única pieza de todo el sistema que sabe cómo hablar con la API oficial de
  * Google AI Studio (Gemini). Es la respuesta al requisito de que "la API
@@ -38,10 +38,20 @@
  * query string o header) — solo desde `process.env.GEMINI_API_KEY`, leída
  * una vez al arrancar. El cliente (RemoteResponseProvider) nunca la ve, ni
  * falta que le hace: solo envía `{skill, promptContext}`.
+ *
+ * Fase 4, Paso 5: la construcción del prompt se extrajo a
+ * server/gemini-prompt-builder.js (una responsabilidad, un archivo — misma
+ * disciplina que ya rige el resto del proyecto), y este archivo gana una
+ * segunda capa de defensa que el prompt por sí solo no puede garantizar:
+ * `validateGroundedSkuUsage()`/`validateAvailabilityConsistency()`,
+ * ejecutadas DESPUÉS de recibir la respuesta del modelo, antes de
+ * devolverla al cliente. Ver el comentario de cabecera de
+ * gemini-prompt-builder.js para el porqué completo.
  */
 'use strict';
 
 const http = require('http');
+const { buildPrompt, SKILL_SCHEMAS } = require('./gemini-prompt-builder.js');
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const DEFAULT_MODEL = 'gemini-2.0-flash';
@@ -49,40 +59,47 @@ const DEFAULT_PORT = 8787;
 const DEFAULT_TIMEOUT_MS = 15000;
 const COPILOT_PATH = '/copilot';
 
-// Mismo contrato ya documentado en response-provider.js — se repite aquí en
-// forma de instrucción para el modelo, no como una nueva fuente de verdad:
-// si ese contrato cambia, este mapa debe actualizarse junto con él.
-const SKILL_SCHEMAS = {
-  'explain-product': '{ "skill": "explain-product", "text": "<explicación en español, basada EXCLUSIVAMENTE en los datos de productKnowledge/commercialContext>" }',
-  'compare-products': '{ "skill": "compare-products", "productos": { "a": {}, "b": {} }, "similitudes": ["..."], "diferencias": ["..."] }',
-  'best-alternative': '{ "skill": "best-alternative", "encontrado": true, "alternativa": { "sku": "...", "nombre": "..." }, "afinidad": "Alta", "justificacion": "...", "mensaje": null }',
-  'cross-sell': '{ "skill": "cross-sell", "recomendaciones": [ { "sku": "...", "nombre": "...", "razon": "..." } ], "mensaje": null }',
-  'price-availability': '{ "skill": "price-availability", "disponible": true, "precio": 0, "precioLista": 0, "priceDifference": 0, "stock": 0, "estado": "...", "mensaje": null }',
-};
+/**
+ * Segunda capa de defensa (Fase 4, Paso 5) para "Mejor alternativa" y
+ * "Venta cruzada": el prompt ya le pide al modelo que solo elija entre los
+ * candidatos que PromptContextBuilder ya filtró según la política R-PIG-04
+ * (excluir confianza Baja) — pero una instrucción de prompt no es una
+ * garantía. Aquí se verifica, después del hecho, que cualquier SKU que el
+ * modelo devuelva realmente pertenezca a esos candidatos ya enviados. Si
+ * no, se trata como un incumplimiento del contrato — lo mismo que un
+ * `skill` que no coincide — y dispara el fallback automático a Local en
+ * RemoteResponseProvider.
+ */
+function validateGroundedSkuUsage(skill, promptContext, parsed) {
+  if (skill === 'best-alternative' && parsed.encontrado && parsed.alternativa) {
+    const allowed = new Set((promptContext && promptContext.alternatives || []).map(a => a.sku));
+    if (!allowed.has(parsed.alternativa.sku)) {
+      throw new Error('Gemini API: el modelo devolvió una alternativa cuyo sku no está entre los candidatos provistos (alternatives).');
+    }
+  }
+  if (skill === 'cross-sell' && Array.isArray(parsed.recomendaciones)) {
+    const allowed = new Set((promptContext && promptContext.crossSell || []).map(c => c.sku));
+    const invalido = parsed.recomendaciones.some(r => !allowed.has(r.sku));
+    if (invalido) {
+      throw new Error('Gemini API: el modelo devolvió al menos una recomendación cuyo sku no está entre los candidatos provistos (crossSell).');
+    }
+  }
+}
 
 /**
- * Arma el prompt de texto que se envía a Gemini. Es la única pieza de todo
- * el sistema que traduce un PromptContext (datos estructurados, Fase 4
- * Paso 2) a lenguaje natural para un modelo — PromptContextBuilder tiene
- * explícitamente prohibido hacer esto; aquí es exactamente lo que se
- * necesita para invocar un LLM real.
+ * Segunda capa de defensa (Fase 4, Paso 5) para "Precio y disponibilidad":
+ * si el PromptContext ya declara que no hay cobertura comercial
+ * (`commercialContext.disponibilidad === false`), el modelo no puede
+ * reportar disponibilidad de todas formas — sería fabricar exactamente el
+ * tipo de dato (precio/stock) que este proyecto nunca ha permitido inventar
+ * en ninguna de las cinco habilidades.
  */
-function buildPrompt(skill, promptContext) {
-  const schema = SKILL_SCHEMAS[skill];
-  return [
-    'Eres el "AI Sales Copilot" de Bismillah Product Intelligence Platform, un asistente de venta B2B para un catálogo farmacéutico/bienestar.',
-    'Responde ÚNICAMENTE con JSON válido (sin markdown, sin texto adicional antes o después) con exactamente esta forma:',
-    schema,
-    '',
-    'Reglas estrictas:',
-    '- Usa EXCLUSIVAMENTE la información que aparece en el PromptContext de abajo. Nunca inventes precios, stock, nombres de producto ni relaciones que no estén ahí.',
-    '- Si un dato no está disponible en el PromptContext (por ejemplo, sin cobertura comercial), dilo honestamente en el campo correspondiente en vez de inventarlo o suponerlo.',
-    '- Responde en español.',
-    '',
-    `Habilidad solicitada: ${skill}`,
-    'PromptContext (JSON):',
-    JSON.stringify(promptContext),
-  ].join('\n');
+function validateAvailabilityConsistency(skill, promptContext, parsed) {
+  if (skill !== 'price-availability') return;
+  const comercial = promptContext && promptContext.commercialContext;
+  if (comercial && comercial.disponibilidad === false && parsed.disponible !== false) {
+    throw new Error('Gemini API: el modelo reportó disponibilidad cuando el PromptContext indicaba que no hay cobertura comercial.');
+  }
 }
 
 /**
@@ -144,6 +161,8 @@ async function callGemini({ skill, promptContext, apiKey, model, timeoutMs, fetc
   if (!parsed || typeof parsed !== 'object' || parsed.skill !== skill) {
     throw new Error('Gemini API: la respuesta del modelo no cumple la forma esperada del contrato (skill no coincide).');
   }
+  validateGroundedSkuUsage(skill, promptContext, parsed);
+  validateAvailabilityConsistency(skill, promptContext, parsed);
 
   // source/generatedAt los fija este servidor, no el modelo — la misma
   // disciplina que ya aplica LocalResponseProvider: metadata del sistema,
@@ -255,6 +274,8 @@ module.exports = {
   callGemini,
   buildPrompt,
   isOriginAllowed,
+  validateGroundedSkuUsage,
+  validateAvailabilityConsistency,
   SKILL_SCHEMAS,
   DEFAULT_MODEL,
   DEFAULT_PORT,

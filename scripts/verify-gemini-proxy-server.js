@@ -1,5 +1,5 @@
 /*
- * Smoke test headless para server/gemini-proxy-server.js (Fase 4, Paso 4).
+ * Smoke test headless para server/gemini-proxy-server.js (Fase 4, Pasos 4-5).
  *
  * Este servidor SÍ es HTTP real (se levanta en un puerto local con
  * http.createServer) — lo que se simula es únicamente la llamada SALIENTE
@@ -23,6 +23,7 @@ const path = require('path');
 const vm = require('vm');
 const {
   startServer, createRequestHandler, callGemini, buildPrompt, isOriginAllowed, SKILL_SCHEMAS,
+  validateGroundedSkuUsage, validateAvailabilityConsistency,
 } = require('../server/gemini-proxy-server.js');
 
 const ROOT = path.join(__dirname, '..');
@@ -179,6 +180,48 @@ async function main() {
     assert(threw && /no cumple la forma esperada/.test(threw.message), 'un skill que no coincide debería rechazarse');
   });
 
+  await check('validateGroundedSkuUsage() (Paso 5): rechaza una "mejor alternativa" cuyo sku no está en promptContext.alternatives', () => {
+    const promptContext = { alternatives: [{ sku: 'SKU-REAL', nombre: 'Real' }] };
+    let threw = null;
+    try {
+      validateGroundedSkuUsage('best-alternative', promptContext, { encontrado: true, alternativa: { sku: 'SKU-INVENTADO' } });
+    } catch (e) { threw = e; }
+    assert(threw && /no está entre los candidatos/.test(threw.message), 'debería rechazar un sku de alternativa que no está entre los candidatos');
+
+    // sku real: no debería lanzar
+    validateGroundedSkuUsage('best-alternative', promptContext, { encontrado: true, alternativa: { sku: 'SKU-REAL' } });
+    // encontrado:false sin alternativa: no debería lanzar (nada que validar)
+    validateGroundedSkuUsage('best-alternative', promptContext, { encontrado: false, alternativa: null });
+  });
+
+  await check('validateGroundedSkuUsage() (Paso 5): rechaza cualquier recomendación de crossSell cuyo sku no está en promptContext.crossSell', () => {
+    const promptContext = { crossSell: [{ sku: 'SKU-A' }, { sku: 'SKU-B' }] };
+    let threw = null;
+    try {
+      validateGroundedSkuUsage('cross-sell', promptContext, { recomendaciones: [{ sku: 'SKU-A' }, { sku: 'SKU-INVENTADO' }] });
+    } catch (e) { threw = e; }
+    assert(threw && /no está entre los candidatos/.test(threw.message), 'debería rechazar si al menos una recomendación tiene un sku fuera de los candidatos');
+
+    // todos reales: no debería lanzar
+    validateGroundedSkuUsage('cross-sell', promptContext, { recomendaciones: [{ sku: 'SKU-A' }, { sku: 'SKU-B' }] });
+    // lista vacía: no debería lanzar
+    validateGroundedSkuUsage('cross-sell', promptContext, { recomendaciones: [] });
+  });
+
+  await check('validateAvailabilityConsistency() (Paso 5): rechaza disponible:true cuando el PromptContext indica disponibilidad:false', () => {
+    const promptContext = { commercialContext: { disponibilidad: false } };
+    let threw = null;
+    try {
+      validateAvailabilityConsistency('price-availability', promptContext, { disponible: true, precio: 39.9 });
+    } catch (e) { threw = e; }
+    assert(threw && /reportó disponibilidad/.test(threw.message), 'debería rechazar disponible:true cuando el contexto real no tiene cobertura comercial');
+
+    // consistente: no debería lanzar
+    validateAvailabilityConsistency('price-availability', promptContext, { disponible: false, precio: null });
+    // otra habilidad: no aplica, no debería lanzar aunque los campos "parezcan" inconsistentes
+    validateAvailabilityConsistency('explain-product', promptContext, { disponible: true });
+  });
+
   // ---- servidor HTTP real (puerto efímero), fetch a Gemini simulado ----
   await check('servidor real: responde 500 sin GEMINI_API_KEY, y nunca intenta llamar a Gemini', async () => {
     let fetchCalled = false;
@@ -239,31 +282,57 @@ async function main() {
   });
 
   // ---- end-to-end genuino: RemoteResponseProvider (cliente real) -> HTTP real -> proxy real -> "Gemini" simulado ----
-  await check('END-TO-END: RemoteResponseProvider, hablando HTTP real contra este proxy real, recibe y relaya la respuesta del "Gemini" simulado', async () => {
-    await withServer({ apiKey: 'k', fetchImpl: fakeGeminiOk('cross-sell', { recomendaciones: [{ sku: '999', nombre: 'Producto E2E', razon: 'prueba end-to-end' }], mensaje: null }) }, async base => {
-      const ROOT_DIR = path.join(__dirname, '..');
-      const FILES = {
-        data: path.join(ROOT_DIR, 'assets', 'js', 'data.js'),
-        contextBuilder: path.join(ROOT_DIR, 'assets', 'js', 'context-builder.js'),
-        promptContextBuilder: path.join(ROOT_DIR, 'assets', 'js', 'prompt-context-builder.js'),
-        commercialDataProvider: path.join(ROOT_DIR, 'assets', 'js', 'commercial-data-provider.js'),
-        featureFlags: path.join(ROOT_DIR, 'assets', 'js', 'feature-flags.js'),
-        responseProviderContract: path.join(ROOT_DIR, 'assets', 'js', 'response-provider-contract.js'),
-        responseProvider: path.join(ROOT_DIR, 'assets', 'js', 'response-provider.js'),
-        localProvider: path.join(ROOT_DIR, 'assets', 'js', 'providers', 'local-response-provider.js'),
-        remoteProvider: path.join(ROOT_DIR, 'assets', 'js', 'providers', 'remote-response-provider.js'),
-      };
-      const sandbox = {};
-      vm.createContext(sandbox);
-      sandbox.fetch = fetch; // fetch REAL de Node — la llamada HTTP hacia el proxy es real
-      sandbox.setTimeout = setTimeout;
-      sandbox.clearTimeout = clearTimeout;
-      sandbox.AbortController = AbortController;
-      vm.runInContext(`var FEATURE_FLAGS = { remoteResponseProvider: true };`, sandbox);
-      vm.runInContext(`var REMOTE_PROVIDER_CONFIG = { endpoint: ${JSON.stringify(base + '/copilot')} };`, sandbox);
-      for (const key of ['data', 'contextBuilder', 'promptContextBuilder', 'commercialDataProvider', 'featureFlags', 'responseProviderContract', 'responseProvider', 'localProvider', 'remoteProvider']) {
-        vm.runInContext(fs.readFileSync(FILES[key], 'utf8'), sandbox, { filename: path.basename(FILES[key]) });
-      }
+  // Se construye el sandbox del cliente ANTES de levantar el servidor para
+  // poder leer, del PromptContext REAL de un producto real, un candidato
+  // legítimo de "crossSell" — desde el Paso 5, gemini-proxy-server.js
+  // rechaza cualquier sku que el modelo simulado devuelva y que no esté
+  // entre esos candidatos (validateGroundedSkuUsage), así que la respuesta
+  // fabricada del "Gemini" simulado debe usar un sku real, no uno inventado
+  // como en la versión de este test del Paso 4.
+  function buildClientSandbox(base) {
+    const ROOT_DIR = path.join(__dirname, '..');
+    const FILES = {
+      data: path.join(ROOT_DIR, 'assets', 'js', 'data.js'),
+      contextBuilder: path.join(ROOT_DIR, 'assets', 'js', 'context-builder.js'),
+      promptContextBuilder: path.join(ROOT_DIR, 'assets', 'js', 'prompt-context-builder.js'),
+      commercialDataProvider: path.join(ROOT_DIR, 'assets', 'js', 'commercial-data-provider.js'),
+      featureFlags: path.join(ROOT_DIR, 'assets', 'js', 'feature-flags.js'),
+      responseProviderContract: path.join(ROOT_DIR, 'assets', 'js', 'response-provider-contract.js'),
+      responseProvider: path.join(ROOT_DIR, 'assets', 'js', 'response-provider.js'),
+      localProvider: path.join(ROOT_DIR, 'assets', 'js', 'providers', 'local-response-provider.js'),
+      remoteProvider: path.join(ROOT_DIR, 'assets', 'js', 'providers', 'remote-response-provider.js'),
+    };
+    const sandbox = {};
+    vm.createContext(sandbox);
+    sandbox.fetch = fetch; // fetch REAL de Node — la llamada HTTP hacia el proxy es real
+    sandbox.setTimeout = setTimeout;
+    sandbox.clearTimeout = clearTimeout;
+    sandbox.AbortController = AbortController;
+    vm.runInContext(`var FEATURE_FLAGS = { remoteResponseProvider: true };`, sandbox);
+    if (base) vm.runInContext(`var REMOTE_PROVIDER_CONFIG = { endpoint: ${JSON.stringify(base + '/copilot')} };`, sandbox);
+    for (const key of ['data', 'contextBuilder', 'promptContextBuilder', 'commercialDataProvider', 'featureFlags', 'responseProviderContract', 'responseProvider', 'localProvider', 'remoteProvider']) {
+      vm.runInContext(fs.readFileSync(FILES[key], 'utf8'), sandbox, { filename: path.basename(FILES[key]) });
+    }
+    return sandbox;
+  }
+
+  await check('END-TO-END: RemoteResponseProvider, hablando HTTP real contra este proxy real, recibe y relaya la respuesta del "Gemini" simulado (5 habilidades)', async () => {
+    // Sandbox "solo lectura" (sin servidor real) para calcular, de un producto
+    // real del catálogo, un PromptContext real y un candidato real de crossSell.
+    const readSandbox = buildClientSandbox(null);
+    const readRun = code => vm.runInContext(code, readSandbox, { filename: 'assert.js' });
+    const candidato = readRun(`
+      (function () {
+        const ctx = ContextBuilder.build(52, { maxPerType: 300 });
+        const pc = PromptContextBuilder.build(ctx);
+        return JSON.stringify(pc.crossSell[0]);
+      })()
+    `);
+    const candidatoReal = JSON.parse(candidato);
+    assert(candidatoReal && candidatoReal.sku, 'el producto de prueba (índice 52) debería tener al menos un candidato real de crossSell');
+
+    await withServer({ apiKey: 'k', fetchImpl: fakeGeminiOk('cross-sell', { recomendaciones: [{ sku: candidatoReal.sku, nombre: candidatoReal.nombre, razon: 'prueba end-to-end' }], mensaje: null }) }, async base => {
+      const sandbox = buildClientSandbox(base);
       const run = code => vm.runInContext(code, sandbox, { filename: 'assert.js' });
       const res = await run(`
         (async function () {
@@ -271,9 +340,77 @@ async function main() {
           return RemoteResponseProvider.crossSell(ctx);
         })()
       `);
-      assert(res.source === 'gemini', `se esperaba source:"gemini" (respuesta remota genuina), se obtuvo "${res.source}" — ¿cayó a Local sin querer?`);
-      assert(res.recomendaciones[0].nombre === 'Producto E2E', 'la respuesta debería contener el contenido devuelto por el "Gemini" simulado, propagado íntegro a través de HTTP real');
+      assert(res.source === 'gemini', `se esperaba source:"gemini" (respuesta remota genuina), se obtuvo "${res.source}" — ¿cayó a Local sin querer? (la validación de grounding del Paso 5 pudo haber rechazado la respuesta)`);
+      assert(res.recomendaciones[0].sku === candidatoReal.sku, 'la respuesta debería contener el sku real devuelto por el "Gemini" simulado, propagado íntegro a través de HTTP real');
     });
+  });
+
+  await check('END-TO-END (grounding, Paso 5): un sku de crossSell INVENTADO por el "Gemini" simulado se rechaza y cae a Local, no se propaga al cliente', async () => {
+    await withServer({ apiKey: 'k', fetchImpl: fakeGeminiOk('cross-sell', { recomendaciones: [{ sku: 'sku-inventado-que-no-existe', nombre: 'Producto Falso', razon: '...' }], mensaje: null }) }, async base => {
+      const sandbox = buildClientSandbox(base);
+      const run = code => vm.runInContext(code, sandbox, { filename: 'assert.js' });
+      const res = await run(`
+        (async function () {
+          const ctx = ContextBuilder.build(52, { maxPerType: 300 });
+          return RemoteResponseProvider.crossSell(ctx);
+        })()
+      `);
+      assert(res.source === 'local', 'una recomendación con un sku fuera de los candidatos reales debería ser rechazada por el proxy y causar fallback automático a Local');
+    });
+  });
+
+  await check('END-TO-END (5 habilidades reales): cada una de las 5 habilidades, con un PromptContext real, recibe correctamente una respuesta remota "gemini" válida a través de HTTP real', async () => {
+    const readSandbox = buildClientSandbox(null);
+    const readRun = code => vm.runInContext(code, readSandbox, { filename: 'assert.js' });
+
+    const escenarios = JSON.parse(readRun(`
+      (function () {
+        const ctxA = ContextBuilder.build(0, { maxPerType: 300 });
+        const ctxB = ContextBuilder.build(1, { maxPerType: 300 });
+        const ctx17 = ContextBuilder.build(17, { maxPerType: 300 });
+        const ctx52 = ContextBuilder.build(52, { maxPerType: 300 });
+        const pcA = PromptContextBuilder.build(ctxA);
+        const pc17 = PromptContextBuilder.build(ctx17);
+        const pc52 = PromptContextBuilder.build(ctx52);
+        return JSON.stringify({
+          alternativeSku: (pc17.alternatives[0] || {}).sku || null,
+          crossSellSku: (pc52.crossSell[0] || {}).sku || null,
+          crossSellNombre: (pc52.crossSell[0] || {}).nombre || null,
+          alternativeNombre: (pc17.alternatives[0] || {}).nombre || null,
+        });
+      })()
+    `));
+
+    for (const skill of ['explain-product', 'compare-products', 'best-alternative', 'cross-sell', 'price-availability']) {
+      let fakeBody;
+      if (skill === 'explain-product') fakeBody = { text: 'Explicación generada por Gemini simulado.' };
+      else if (skill === 'compare-products') fakeBody = { productos: { a: {}, b: {} }, similitudes: ['similitud simulada'], diferencias: [] };
+      else if (skill === 'best-alternative') fakeBody = { encontrado: true, alternativa: { sku: escenarios.alternativeSku, nombre: escenarios.alternativeNombre }, afinidad: 'Alta', justificacion: 'justificación simulada', mensaje: null };
+      else if (skill === 'cross-sell') fakeBody = { recomendaciones: [{ sku: escenarios.crossSellSku, nombre: escenarios.crossSellNombre, razon: 'razón simulada' }], mensaje: null };
+      else fakeBody = { disponible: false, precio: null, precioLista: null, priceDifference: null, stock: null, estado: null, mensaje: 'sin cobertura comercial (simulado)' };
+
+      // eslint-disable-next-line no-await-in-loop
+      await withServer({ apiKey: 'k', fetchImpl: fakeGeminiOk(skill, fakeBody) }, async base => {
+        const sandbox = buildClientSandbox(base);
+        const run = code => vm.runInContext(code, sandbox, { filename: 'assert.js' });
+        const res = await run(`
+          (async function () {
+            if (${JSON.stringify(skill)} === 'compare-products') {
+              const ctxA = ContextBuilder.build(0, { maxPerType: 300 });
+              const ctxB = ContextBuilder.build(1, { maxPerType: 300 });
+              return RemoteResponseProvider.compareProducts(ctxA, ctxB);
+            }
+            const idx = ${JSON.stringify(skill)} === 'best-alternative' ? 17 : (${JSON.stringify(skill)} === 'cross-sell' ? 52 : 0);
+            const ctx = ContextBuilder.build(idx, { maxPerType: 300 });
+            return RemoteResponseProvider[${JSON.stringify(
+              { 'explain-product': 'explainProduct', 'best-alternative': 'bestAlternative', 'cross-sell': 'crossSell', 'price-availability': 'priceAndAvailability' }[skill]
+            )}](ctx);
+          })()
+        `);
+        assert(res.source === 'gemini', `[${skill}] se esperaba source:"gemini", se obtuvo "${res.source}"`);
+        assert(res.skill === skill, `[${skill}] se esperaba skill:"${skill}", se obtuvo "${res.skill}"`);
+      });
+    }
   });
 
   // ---- reporte ----
