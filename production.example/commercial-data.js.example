@@ -1,0 +1,38 @@
+/*
+ * Template showing the exact shape expected by assets/js/commercial-data-provider.js.
+ *
+ * This file is OPTIONAL — if it's missing, CommercialDataProvider.getBySku()
+ * simply returns null for every SKU and Context Builder's `comercial` block
+ * stays exactly like before this integration existed (disponible:false,
+ * everything null). Nothing else in the app requires this file to be present.
+ *
+ * This is NOT real commercial data — it's a 1-record stub so you can see the
+ * schema (matching data.js.example's two example SKUs: only 10001 has a
+ * commercial record here, 10002 intentionally doesn't, to show that gap
+ * handling is normal and expected).
+ *
+ * To stand up real commercial data locally, this file is normally GENERATED,
+ * not hand-written — see scripts/import-commercial-data.js:
+ *   node scripts/import-commercial-data.js <ruta-a-products.js-del-pipeline-comercial>
+ *
+ * That script reads the already-generated output of an external commercial
+ * data pipeline (Excel -> JSON, outside this repository) and cross-references
+ * it by SKU against production/data.js. It does not fabricate any value.
+ *
+ * Shape:
+ *   meta.generatedAt        — ISO timestamp of the import
+ *   meta.sourceRowCount     — how many rows the external source had
+ *   meta.skusSinCode        — rows skipped for missing a SKU/code
+ *   meta.coverage           — { totalCatalogo, conDatoComercial } if production/data.js was present
+ *   bySku[sku].precio           — final sale price
+ *   bySku[sku].stock             — total stock units
+ *   bySku[sku].estado            — stock status label (e.g. "Stock medio")
+ *   bySku[sku].priceDifference   — list price minus final price. NOT a profit
+ *                                  margin (no cost data exists in the source) —
+ *                                  never rename this to "margen".
+ *
+ * Save the generated file as production/commercial-data.js (the whole
+ * /production/ folder is git-ignored — see .gitignore and README.md,
+ * "Perfiles de despliegue").
+ */
+window.COMMERCIAL_DATA={"meta":{"generatedAt":"2026-01-01T00:00:00.000Z","sourceRowCount":1,"skusSinCode":0,"coverage":{"totalCatalogo":2,"conDatoComercial":1}},"bySku":{"10001":{"precio":35.0,"stock":12,"estado":"Stock medio","priceDifference":0}}};

@@ -53,6 +53,18 @@ cp -r production.example production
 mv production/data.js.example production/data.js   # y complétalo con tus datos reales
 ```
 
+### Datos comerciales (opcional, Fase 3)
+
+`production/commercial-data.js` es un archivo **opcional** y gitignored (mismo tratamiento que `production/data.js`) con precio, stock y estado real por SKU. Si no existe, `CommercialDataProvider` no encuentra nada y el bloque `comercial` del Context Builder queda igual que siempre (`disponible:false`, todo `null`) — nada se rompe.
+
+Se genera con `scripts/import-commercial-data.js` a partir de la salida ya generada por un pipeline comercial externo (Excel → JSON), cruzada por SKU con `production/data.js`:
+
+```bash
+node scripts/import-commercial-data.js <ruta-a-products.js-del-pipeline-comercial>
+```
+
+Ver [ARCHITECTURE.md](docs/ARCHITECTURE.md#commercial-data-provider-fase-3-paso-1) para el detalle de esa arquitectura. Formato exacto: [`production.example/commercial-data.js.example`](production.example/commercial-data.js.example).
+
 ## Estructura del repositorio
 
 SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin backend ni build step. La lógica de la aplicación y el sistema de diseño son 100 % compartidos entre perfiles; solo cambia el archivo de datos.
@@ -67,25 +79,30 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin backend ni bui
 │       ├── app.js                 # Lógica de la aplicación (vistas, búsqueda, motores, canvas, orquestación del Copilot)
 │       ├── context-builder.js     # Construye el contexto de producto para el AI Sales Copilot (sin IA, sin red)
 │       ├── response-provider.js   # Puerto: registro del proveedor de respuestas activo del Copilot (explainProduct + compareProducts + bestAlternative + crossSell)
+│       ├── commercial-data-provider.js  # Adaptador: Context Builder pide datos comerciales por SKU, sin conocer su fuente (Fase 3)
 │       ├── providers/
 │       │   └── local-response-provider.js  # Proveedor local (sin IA, sin red) — las 4 habilidades funcionales del Copilot
 │       └── data.js                # Dataset SINTÉTICO — es el dato por defecto del repo, versionado
 ├── production/                    # Perfil real — IGNORADO POR GIT (no existe en el repo clonado)
 │   ├── index.html
-│   └── data.js                    # Catálogo real — nunca se commitea
+│   ├── data.js                    # Catálogo real — nunca se commitea
+│   └── commercial-data.js         # Datos comerciales reales (opcional) — nunca se commitea
 ├── production.example/            # Scaffold versionado para reconstruir /production localmente
 │   ├── index.html
-│   └── data.js.example            # Plantilla del formato de datos (3 productos de muestra)
+│   ├── data.js.example            # Plantilla del formato de datos (3 productos de muestra)
+│   └── commercial-data.js.example # Plantilla del formato de datos comerciales (1 registro de muestra)
 ├── scripts/
 │   ├── generate-demo-data.js        # Genera assets/js/data.js a partir de production/data.js
+│   ├── import-commercial-data.js    # Genera production/commercial-data.js desde el pipeline comercial externo
 │   ├── verify-context-builder.js    # QA headless (Node) del Context Builder
+│   ├── verify-commercial-data.js    # QA headless (Node) del Commercial Data Provider
 │   ├── verify-response-provider.js  # QA headless (Node) de "Explicar producto"
 │   ├── verify-compare-products.js   # QA headless (Node) de "Comparar productos"
 │   ├── verify-best-alternative.js   # QA headless (Node) de "Mejor alternativa"
 │   └── verify-cross-sell.js         # QA headless (Node) de "Venta cruzada inteligente"
 └── docs/
-    ├── PROJECT_BRIEF.md           # Objetivo, dominio, alcance y supuestos del MVP; estado de la Fase 2
-    ├── ARCHITECTURE.md            # Arquitectura del Context Builder y el Response Provider (Fase 2)
+    ├── PROJECT_BRIEF.md           # Objetivo, dominio, alcance y supuestos del MVP; estado de las Fases 2 y 3
+    ├── ARCHITECTURE.md            # Arquitectura del AI Sales Copilot y de los datos comerciales (Fases 2-3)
     └── QUALITY_REPORT.md          # Resultados de verificación por categoría
 ```
 
@@ -126,8 +143,8 @@ El generador usa una semilla fija, así que el resultado es reproducible y el di
 
 ## Documentación
 
-- [PROJECT_BRIEF.md](docs/PROJECT_BRIEF.md) — objetivo, dominio, modelo de datos, supuestos críticos y estado de la Fase 2.
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — arquitectura y contrato del Context Builder y del Response Provider (incl. cómo se reemplaza el proveedor local por Gemini sin tocar el resto del sistema).
+- [PROJECT_BRIEF.md](docs/PROJECT_BRIEF.md) — objetivo, dominio, modelo de datos, supuestos críticos y estado de las Fases 2 y 3.
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — arquitectura y contrato del Context Builder, el Response Provider (incl. cómo se reemplaza el proveedor local por Gemini sin tocar el resto del sistema) y el Commercial Data Provider.
 - [QUALITY_REPORT.md](docs/QUALITY_REPORT.md) — verificación funcional, de arquitectura, seguridad y consistencia.
 
 ## Licencia

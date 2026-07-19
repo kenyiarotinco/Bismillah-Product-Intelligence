@@ -8,9 +8,16 @@
  * descrito en docs/PROJECT_BRIEF.md.
  *
  * Bloque `comercial`: los campos precio/stock/margen/estado quedan
- * declarados y en null a propósito — es la forma del contrato ya preparada
- * para cuando la Fase 1 (Integración de Datos) entregue esa información
- * real. Este módulo no fabrica, estima ni simula esos valores.
+ * declarados y en null salvo que exista un dato comercial real para ese
+ * SKU. Este módulo no fabrica, estima ni simula esos valores.
+ *
+ * Fase 3, Paso 1: el bloque `comercial` se completa consultando
+ * CommercialDataProvider.getBySku(sku) — no leyendo ningún dataset externo
+ * directamente (ver assets/js/commercial-data-provider.js). Si el proveedor
+ * no está cargado, o no tiene registro para ese SKU, el resultado es
+ * exactamente el mismo `comercial` en null que ya existía desde el Paso 2 —
+ * cero cambio de comportamiento para el catálogo sintético público y para
+ * cualquier SKU sin cobertura comercial.
  */
 'use strict';
 
@@ -82,13 +89,45 @@ const ContextBuilder = (function () {
     return detalle;
   }
 
+  function buildComercial(sku, commercialProvider) {
+    const registro = commercialProvider ? commercialProvider.getBySku(sku) : null;
+    if (!registro) {
+      return {
+        disponible: false,
+        precio: null,
+        stock: null,
+        margen: null,
+        estado: null,
+        priceDifference: null,
+        pendienteDe: 'Fase 1 — Integración de Datos',
+      };
+    }
+    return {
+      disponible: true,
+      precio: registro.precio,
+      stock: registro.stock,
+      // Margen de utilidad real (venta - costo): sigue sin existir en
+      // ninguna fuente disponible — nunca se rellena a partir de
+      // priceDifference, que es un dato distinto (ver más abajo).
+      margen: null,
+      estado: registro.estado,
+      // Diferencia entre precio de lista y precio final del dato comercial
+      // — NO es margen de utilidad. Nombre deliberadamente distinto de
+      // "margen" para no inducir a interpretarlo como rentabilidad.
+      priceDifference: registro.priceDifference,
+      pendienteDe: null,
+    };
+  }
+
   /**
    * Construye el contexto de un producto.
    * @param {number|string} productRef Índice del producto (como P[i] en app.js) o su SKU.
-   * @param {{data?:object, maxPerType?:number}} [options]
+   * @param {{data?:object, maxPerType?:number, commercialProvider?:object}} [options]
    *   data: dataset alternativo (por defecto usa el global DATA) — pensado para tests.
    *   maxPerType: tope de relaciones detalladas por tipo (default 8); no afecta a `porTipo`,
    *   que siempre refleja el total real.
+   *   commercialProvider: proveedor alternativo con getBySku(sku) (por defecto usa el
+   *   global CommercialDataProvider si existe) — pensado para tests.
    * @returns {object|null} Contexto serializable, o null si el producto no existe.
    */
   function build(productRef, options = {}) {
@@ -99,6 +138,8 @@ const ContextBuilder = (function () {
         'de invocar el builder, o pásalo explícitamente en options.data.'
       );
     }
+    const commercialProvider = options.commercialProvider
+      || (typeof CommercialDataProvider !== 'undefined' ? CommercialDataProvider : null);
 
     const idx = resolveIndex(data, productRef);
     if (idx < 0) return null;
@@ -137,16 +178,7 @@ const ContextBuilder = (function () {
         detalle: buildDetail(entries, data, maxPerType),
         detalleLimitadoPorTipo: maxPerType,
       },
-      // Preparado para la Fase 1 (Integración de Datos). Mientras esa fase no
-      // entregue estos campos, se exponen en null — nunca con valores de ejemplo.
-      comercial: {
-        disponible: false,
-        precio: null,
-        stock: null,
-        margen: null,
-        estado: null,
-        pendienteDe: 'Fase 1 — Integración de Datos',
-      },
+      comercial: buildComercial(String(sku), commercialProvider),
     };
   }
 

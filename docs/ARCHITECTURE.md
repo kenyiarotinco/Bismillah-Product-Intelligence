@@ -1,10 +1,12 @@
-# ARCHITECTURE — AI Sales Copilot: Context Builder & Response Provider (Fase 2)
+# ARCHITECTURE — AI Sales Copilot & Commercial Data (Fases 2-3)
 
-Este documento cubre los dos módulos de datos/lógica que sostienen al AI
-Sales Copilot, en el orden en que los atraviesa una petición:
+Este documento cubre los módulos de datos/lógica que sostienen al AI Sales
+Copilot, en el orden en que los atraviesa una petición:
 
 ```
 Usuario → AI Sales Copilot (panel, app.js) → Context Builder → Response Provider → Respuesta en el panel
+                                                    ↑
+                                        Commercial Data Provider (Fase 3)
 ```
 
 - **Context Builder** (Paso 2): construye el contexto de un producto.
@@ -12,6 +14,10 @@ Usuario → AI Sales Copilot (panel, app.js) → Context Builder → Response Pr
   la respuesta de una habilidad concreta del Copilot — hoy, "Explicar
   producto" (Paso 3), "Comparar productos" (Paso 4), "Mejor alternativa"
   (Paso 5) y "Venta cruzada inteligente" (Paso 6).
+- **Commercial Data Provider** (Fase 3, Paso 1): adaptador que Context
+  Builder consulta por SKU para completar el bloque `comercial` con datos
+  reales (precio, stock, estado) cuando existen — ver la sección dedicada
+  más abajo.
 
 ## Context Builder (Fase 2, Paso 2)
 
@@ -90,11 +96,12 @@ Forma del objeto devuelto:
     "detalleLimitadoPorTipo": 8       // aclara que `detalle` está recortado; `porTipo` siempre es el total real
   },
   "comercial": {
-    "disponible": false,
+    "disponible": false,          // true si CommercialDataProvider tiene registro para este SKU — ver Fase 3, Paso 1
     "precio": null,
     "stock": null,
-    "margen": null,
+    "margen": null,                // margen de utilidad real — sigue sin existir en ninguna fuente, ver Fase 3
     "estado": null,
+    "priceDifference": null,       // añadido en la Fase 3 — precio lista − precio final; NO es margen
     "pendienteDe": "Fase 1 — Integración de Datos"
   }
 }
@@ -122,10 +129,11 @@ Forma del objeto devuelto:
   contra `FAMILY`, igual que ya hace Producto 360.
 - **`comercial` es un objeto siempre presente, con valores `null`.** No es un
   campo opcional que aparece cuando hay datos — está en el esquema desde
-  ahora, con `disponible:false` y `pendienteDe` documentando por qué. Así,
-  cuando la Fase 1 entregue precio/stock/margen/estado, el cambio es
-  *rellenar* ese bloque (y flipear `disponible`), no *rediseñar* el esquema
-  ni migrar a los consumidores que ya lo lean.
+  ahora, con `disponible:false` y `pendienteDe` documentando por qué. Esta
+  predicción del Paso 2 se cumplió literalmente en la Fase 3, Paso 1: el
+  cambio fue *rellenar* ese bloque (y flipear `disponible`) por SKU, sin
+  rediseñar el esquema ni migrar a los cuatro consumidores que ya lo leían
+  — ver la sección "Commercial Data Provider" más abajo.
 - **`resolveIndex` acepta índice o SKU** porque Producto 360 ya usa el índice
   numérico como identidad de trabajo (`p360Current`), pero el SKU es la
   identidad estable de negocio. Ambos caminos producen el mismo contexto
@@ -883,3 +891,225 @@ interferencia de estado. Cambiar de producto reinicia las cuatro. Responsive
 errores de consola en ningún caso. La habilidad restante (Precio y
 disponibilidad) permanece visualmente idéntica a como quedó aprobada en el
 Paso 1.
+
+## Commercial Data Provider (Fase 3, Paso 1)
+
+### Responsabilidad
+
+Completar, con datos reales, el bloque `comercial` que `ContextBuilder.build()`
+ya devolvía desde el Paso 2 (hasta ahora, siempre en `null`). No implementa
+ninguna habilidad nueva del Copilot, no toca la UI, no modifica ninguna de
+las cuatro habilidades existentes — es exclusivamente infraestructura de
+datos, consistente con el alcance aprobado de este paso.
+
+### El pipeline externo (analizado, no modificado)
+
+Existe, fuera de este repositorio, un pipeline comercial ya funcional y
+estable (un dashboard ejecutivo independiente, "Bismillah Digital Twin
+Comercial") con su propio flujo:
+
+```
+Excel fuente (catálogo comercial real)
+        │  python tools/build_data.py <excel>
+        ▼
+data/products.js  →  window.BISMILLAH_DATA = { metadata, products[] }
+```
+
+Cada producto de esa salida trae, entre otros campos: `code` (identificador
+del producto), `finalPrice`/`listPrice` (precios), `stockTotal` (stock),
+`stockStatus` (estado de inventario, calculado por umbrales de stock) y
+`marginGap` (`listPrice − finalPrice`).
+
+Este paso **no toca ni reemplaza** ese pipeline (`build_data.py` y su paso
+de empaquetado siguen siendo, exactamente como antes, la única fuente de
+verdad de `data/products.js`). Solo se verificó y se documenta cómo
+funciona, y se consume su salida ya generada, tal como llega.
+
+**Join verificado con datos reales:** el campo `code` de esa fuente coincide
+exactamente (mismo número, mismo nombre de producto) con el `sku` real de
+`production/data.js` de este proyecto — confirmado por muestreo antes de
+implementar y, de forma exhaustiva, en la importación real: **1.094/1.094**
+productos del catálogo de este proyecto tienen registro comercial
+correspondiente.
+
+### Separación de responsabilidades: dos capas, cada una con una sola preocupación
+
+1. **`scripts/import-commercial-data.js`** (Node, se ejecuta manualmente,
+   igual que `generate-demo-data.js`) — la única pieza del sistema que
+   conoce la forma cruda de la fuente externa (`code`, `finalPrice`,
+   `stockTotal`, `stockStatus`, `marginGap`). Lee el `data/products.js` ya
+   generado por el pipeline externo, lo cruza por SKU contra
+   `production/data.js`, y escribe `production/commercial-data.js` ya en
+   la forma mínima y limpia que este proyecto necesita:
+   ```js
+   window.COMMERCIAL_DATA = {
+     meta: { generatedAt, sourceRowCount, skusSinCode, coverage },
+     bySku: { "<sku>": { precio, stock, estado, priceDifference }, ... },
+   };
+   ```
+   Uso: `node scripts/import-commercial-data.js <ruta-a-products.js-del-pipeline-comercial>`.
+
+2. **`assets/js/commercial-data-provider.js`** (navegador) — no sabe nada
+   de la fuente externa ni de cómo se generó `COMMERCIAL_DATA`; solo sabe
+   leer ese global ya normalizado y exponer `CommercialDataProvider.getBySku(sku)`.
+   Si `COMMERCIAL_DATA` no está cargado (perfil demo público, o el archivo
+   gitignored aún no se generó localmente), `getBySku()` devuelve `null`
+   para cualquier SKU.
+
+`Context Builder` solo conoce la capa 2 — nunca lee `window.COMMERCIAL_DATA`
+directamente, nunca conoce `code`/`finalPrice`/`marginGap`. Esto es lo que
+pedía explícitamente el criterio de diseño aprobado ("Context Builder solo
+debe solicitar información por SKU"): si mañana la fuente comercial cambia
+de forma completamente (otro Excel, otro pipeline, incluso otro negocio),
+solo cambia el script de importación — `commercial-data-provider.js` y
+`context-builder.js` no se enteran.
+
+### Por qué `priceDifference` y no `margen`
+
+`marginGap` en la fuente es `listPrice − finalPrice`: cuánto se descontó
+respecto al precio de lista. **No es un margen de utilidad** — no hay dato
+de costo en ninguna fuente disponible, ni en este proyecto ni en el
+pipeline externo. Nombrarlo `margen` habría inducido a leerlo como
+rentabilidad. Por eso:
+
+- El campo nuevo en `comercial` se llama `priceDifference`, no `margen`.
+- El campo `margen` que el contrato ya tenía desde el Paso 2 (pensado para
+  un margen de utilidad real) **permanece `null` siempre** — `buildComercial()`
+  nunca lo rellena a partir de `priceDifference`, ni aunque haya datos
+  comerciales disponibles para ese SKU. Verificado explícitamente en QA
+  (`scripts/verify-commercial-data.js`) y en la importación real: ningún
+  registro generado contiene la clave `margen`.
+- El script de importación documenta esta distinción en un comentario junto
+  al cálculo, no solo en este documento.
+
+### Cómo Context Builder consulta al proveedor sin acoplarse a él
+
+```js
+// context-builder.js
+const commercialProvider = options.commercialProvider
+  || (typeof CommercialDataProvider !== 'undefined' ? CommercialDataProvider : null);
+...
+comercial: buildComercial(String(sku), commercialProvider),
+```
+
+`options.commercialProvider` sigue exactamente el mismo patrón de
+inyección ya usado por `options.data` desde el Paso 2 — pensado para tests:
+un test puede pasar un `commercialProvider` de mentira (`{getBySku: () =>
+{...}}`) sin necesitar cargar `commercial-data-provider.js` ni fabricar un
+`window.COMMERCIAL_DATA`. Si no se pasa nada, cae al global real si existe,
+o a `null` si no — el mismo comportamiento que tenía cualquier llamada a
+`build()` antes de este paso.
+
+`buildComercial()` es una función nueva y pura: si `commercialProvider` es
+`null` o no tiene registro para ese SKU, devuelve exactamente el objeto
+`{disponible:false, precio:null, stock:null, margen:null, estado:null,
+priceDifference:null, pendienteDe:'Fase 1 — Integración de Datos'}` — el
+mismo objeto, campo por campo, que `context-builder.js` devolvía de forma
+hardcodeada desde el Paso 2 (con `priceDifference` añadido, siempre `null`
+en ese caso). Solo cuando hay registro real cambia el resultado.
+
+### La prueba de "aditivo" no es una afirmación, es un resultado de test
+
+`scripts/verify-context-builder.js` — el mismo script del Paso 2, **sin
+modificar ni una línea** — solo carga `data.js` + `context-builder.js`
+(nunca `commercial-data-provider.js`) y sigue pasando **10/10 checks**
+exactamente como antes de este paso. Eso es la demostración de que, sin el
+proveedor comercial cargado, el comportamiento es *idéntico*, no solo
+"parecido" — el mismo test, sin tocar, sigue validando la misma forma.
+
+### Un efecto secundario esperado y deliberadamente no evitado
+
+Las cuatro habilidades del Copilot **no se modificaron** (cero líneas
+tocadas en `local-response-provider.js`), pero `explainProduct()` ya
+contenía, desde el Paso 3, esta rama:
+
+```js
+if (!comercial.disponible) {
+  parrafos.push('Precio, stock, margen y estado todavía no están disponibles...');
+}
+```
+
+Para un SKU que ahora sí tiene dato comercial real, `comercial.disponible`
+es `true` y esa rama simplemente no se ejecuta — el texto de "Explicar
+producto" para ESE producto ya no incluye la advertencia de "no
+disponible", sin que se haya tocado el código de esa habilidad. Es
+exactamente el comportamiento que ese `if` fue diseñado para tener, y no
+constituye una regresión: para cualquier SKU sin cobertura comercial (o en
+el perfil demo público, siempre) el texto es idéntico al de antes.
+Verificado explícitamente en navegador, en ambos sentidos, contra el perfil
+de producción con datos reales cargados.
+
+### Fuera de alcance (deliberado, en este paso)
+
+- No se implementa la habilidad "Precio y disponibilidad" del Copilot.
+- No se modifica ninguna de las cuatro habilidades existentes para
+  *aprovechar* activamente los nuevos campos (más allá del efecto
+  secundario honesto ya descrito arriba).
+- No se toca el pipeline externo (`build_data.py`, `build_bundle.py`) de
+  ninguna forma.
+- No se resuelve margen de utilidad real — sigue sin existir esa fuente.
+- `production.example/commercial-data.js.example` es un stub versionado de
+  1 registro (mismo patrón que `data.js.example`) — no un dataset de
+  referencia completo.
+
+### QA — Commercial Data Provider
+
+`scripts/verify-commercial-data.js` — mismo enfoque headless que los pasos
+anteriores: carga `data.js` + `context-builder.js` +
+`commercial-data-provider.js` en un sandbox de Node, sin DOM ni red, y
+verifica:
+
+1. Guardrail estático sobre código ejecutable (no comentarios) de
+   `context-builder.js` y `commercial-data-provider.js`: cero referencias a
+   `fetch`, `XMLHttpRequest`, `document`, `gemini`, `openai`, `anthropic`.
+2. Sin `window.COMMERCIAL_DATA` cargado, `getBySku()` devuelve `null` e
+   `isAvailable()` es `false`.
+3. `ContextBuilder.build()` sin proveedor comercial produce un `comercial`
+   idéntico al del Paso 2 (mismos 6 campos originales en los mismos
+   valores, más `priceDifference:null`) — ninguna clave inesperada.
+4. Inyectando un `commercialProvider` de prueba con registro para el SKU:
+   `disponible`/`precio`/`stock`/`estado`/`priceDifference` se completan
+   correctamente, y **`margen` permanece `null`** — verificado
+   explícitamente, no solo por inspección.
+5. Inyectando un `commercialProvider` disponible pero sin registro para
+   ese SKU específico: mismo resultado que sin proveedor — la cobertura
+   parcial no rompe nada.
+6. El resto del contexto (`producto`, `relaciones`, `meta`) es
+   *byte-idéntico* con y sin proveedor comercial — el bloque `comercial`
+   es la única parte que cambia.
+7. Recorre **todo el catálogo** con y sin un proveedor simulado, sin
+   lanzar ninguna excepción.
+
+Resultado: **7/7 checks OK**. Se volvieron a correr
+`scripts/verify-context-builder.js` (**10/10**, sin cambios en el script),
+`scripts/verify-response-provider.js` (**9/9**),
+`scripts/verify-compare-products.js` (**10/10**),
+`scripts/verify-best-alternative.js` (**10/10**) y
+`scripts/verify-cross-sell.js` (**10/10**) en el mismo momento — cero
+regresión sobre los Pasos 2 a 6.
+
+**Verificación adicional con datos reales** (no solo fixtures de prueba):
+se ejecutó `scripts/import-commercial-data.js` contra la salida real del
+pipeline externo y `production/data.js` real de este proyecto.
+Resultado: **1.094/1.094** productos del catálogo con dato comercial
+disponible; ninguna clave `margen` presente en ningún registro generado;
+`ContextBuilder.build()` sobre los 1.094 productos reales produjo
+`comercial.disponible === true` para el 100 % de ellos, con el shape
+esperado. Verificado también en navegador: perfil demo público
+(`CommercialDataProvider.isAvailable() === false`, `comercial` idéntico al
+original, "Explicar producto" muestra la misma advertencia de siempre) y
+perfil de producción con el archivo comercial real cargado
+(`isAvailable() === true`, `comercial.disponible === true`, la advertencia
+desaparece del texto de "Explicar producto" para el producto probado, las
+cuatro habilidades del Copilot funcionan sin errores de consola).
+
+Durante la implementación se encontró y corrigió un bug real (no una
+regresión de este proyecto, sino un defecto nuevo en el propio script de
+importación): `sandbox.DATA` no queda expuesto como propiedad tras
+`vm.runInContext()` en Node cuando el script fuente declara `const DATA`
+—mismo comportamiento del módulo `vm` ya documentado para los scripts de
+QA de pasos anteriores—, así que `loadCatalogSkus()` intentaba leer
+`sandbox.DATA.products` y fallaba. Se corrigió leyendo `DATA.products...`
+con una segunda evaluación dentro del mismo contexto, el mismo patrón que
+ya usan los scripts `verify-*.js`. No fue necesario ningún cambio de
+arquitectura para resolverlo.
