@@ -317,14 +317,71 @@ function exList() {
 let p360Current = -1;
 const p360Expanded = new Set();
 
-/* ---------- ai sales copilot (UI only, sin lógica ni IA conectada) ---------- */
+/* ---------- ai sales copilot ---------- */
 const COPILOT_SKILLS = [
-  { icon: '🤖', title: 'Explicar producto', desc: 'Explica beneficios, usos y público objetivo.', bg: 'var(--emerald-tint)', fg: 'var(--emerald-dk)' },
-  { icon: '⚖️', title: 'Comparar productos', desc: 'Compara dos productos comercialmente.', bg: 'var(--indigo-tint)', fg: 'var(--indigo)' },
-  { icon: '💰', title: 'Precio y disponibilidad', desc: 'Consulta precio, stock y estado.', bg: 'var(--amber-tint)', fg: '#8A5A14' },
-  { icon: '💲', title: 'Mejor alternativa', desc: 'Encuentra el mejor sustituto.', bg: 'rgba(122,95,191,.14)', fg: 'var(--t2)' },
-  { icon: '🧠', title: 'Venta cruzada inteligente', desc: 'Sugiere productos complementarios y explica por qué recomendarlos.', bg: 'rgba(194,85,127,.14)', fg: 'var(--t5)' },
+  { key: 'explain-product', icon: '🤖', title: 'Explicar producto', desc: 'Explica beneficios, usos y público objetivo.', bg: 'var(--emerald-tint)', fg: 'var(--emerald-dk)' },
+  { key: null, icon: '⚖️', title: 'Comparar productos', desc: 'Compara dos productos comercialmente.', bg: 'var(--indigo-tint)', fg: 'var(--indigo)' },
+  { key: null, icon: '💰', title: 'Precio y disponibilidad', desc: 'Consulta precio, stock y estado.', bg: 'var(--amber-tint)', fg: '#8A5A14' },
+  { key: null, icon: '💲', title: 'Mejor alternativa', desc: 'Encuentra el mejor sustituto.', bg: 'rgba(122,95,191,.14)', fg: 'var(--t2)' },
+  { key: null, icon: '🧠', title: 'Venta cruzada inteligente', desc: 'Sugiere productos complementarios y explica por qué recomendarlos.', bg: 'rgba(194,85,127,.14)', fg: 'var(--t5)' },
 ];
+
+// Proveedor activo del AI Sales Copilot — hoy, el local (sin red, sin IA).
+// Reemplazarlo por Gemini (u otro proveedor real) más adelante se reduce a
+// cambiar ESTA línea por `ResponseProvider.use(GeminiResponseProvider);`:
+// ni el panel, ni ContextBuilder, ni Producto 360 necesitan tocarse — ver
+// docs/ARCHITECTURE.md.
+ResponseProvider.use(LocalResponseProvider);
+
+// Estado de la única habilidad implementada en este paso ("Explicar
+// producto"). Sigue el mismo patrón que p360Expanded: vive a nivel de
+// módulo, se reinicia en openProduct() y sobrevive a los re-render parciales
+// del panel (p. ej. al expandir "mostrar más" en un grupo de relaciones).
+let copilotExplain = { status: 'idle', text: null, source: null, generatedAt: null, error: null };
+
+function copilotSkillRowHTML(skill, idx) {
+  const isExplain = skill.key === 'explain-product';
+  const status = isExplain ? copilotExplain.status : 'idle';
+  const isOpen = isExplain && (status === 'done' || status === 'error');
+
+  const statusLabel = !isExplain ? 'Próximamente'
+    : status === 'loading' ? 'Generando…'
+    : status === 'error' ? 'No se pudo generar'
+    : status === 'done' ? 'Disponible'
+    : 'Disponible';
+  const statusClass = !isExplain ? '' : status === 'error' ? 'is-error' : 'is-active';
+
+  const rowHTML = `
+    <button class="copilot-row${isOpen ? ' is-open' : ''}${status === 'loading' ? ' is-loading' : ''}" type="button"
+      ${isExplain ? 'data-skill="explain-product"' : ''}
+      ${status === 'loading' ? 'aria-busy="true" disabled' : ''}>
+      <span class="copilot-ic" style="background:${skill.bg};color:${skill.fg}">${skill.icon}<span class="copilot-ic-n">${idx + 1}</span></span>
+      <span class="copilot-row-txt">
+        <span class="copilot-row-title">${skill.title}</span>
+        <span class="copilot-row-desc">${skill.desc}</span>
+        <span class="copilot-row-status${statusClass ? ' ' + statusClass : ''}">${statusLabel}</span>
+      </span>
+      <span class="copilot-chev${isOpen ? ' is-open' : ''}">›</span>
+    </button>`;
+
+  let extraHTML = '';
+  if (isExplain && status === 'loading') {
+    extraHTML = `<div class="copilot-response-loading"><span class="dot-live"></span>Generando explicación…</div>`;
+  } else if (isExplain && status === 'done') {
+    const time = copilotExplain.generatedAt
+      ? new Date(copilotExplain.generatedAt).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' })
+      : '';
+    extraHTML = `
+      <div class="copilot-response">
+        <div class="copilot-response-h"><span class="dot-live"></span>Respuesta · ${esc(copilotExplain.source || 'local')} · ${time}</div>
+        ${esc(copilotExplain.text)}
+      </div>`;
+  } else if (isExplain && status === 'error') {
+    extraHTML = `<div class="copilot-response-err">${esc(copilotExplain.error)}</div>`;
+  }
+
+  return `<div class="copilot-skill-block">${rowHTML}${extraHTML}</div>`;
+}
 
 function copilotPanelHTML() {
   return `
@@ -341,24 +398,62 @@ function copilotPanelHTML() {
         <span class="copilot-info" title="Habilidades planificadas para el AI Sales Copilot">i</span>
       </div>
       <div class="copilot-skills">
-        ${COPILOT_SKILLS.map((s, idx) => `
-          <button class="copilot-row" type="button">
-            <span class="copilot-ic" style="background:${s.bg};color:${s.fg}">${s.icon}<span class="copilot-ic-n">${idx + 1}</span></span>
-            <span class="copilot-row-txt">
-              <span class="copilot-row-title">${s.title}</span>
-              <span class="copilot-row-desc">${s.desc}</span>
-              <span class="copilot-row-status">Próximamente</span>
-            </span>
-            <span class="copilot-chev">›</span>
-          </button>`).join('')}
+        ${COPILOT_SKILLS.map((s, idx) => copilotSkillRowHTML(s, idx)).join('')}
       </div>
       <div class="copilot-foot"><span class="copilot-foot-ic">🛡️</span><span>Respuestas basadas en tu catálogo, inventario y relaciones internas — potenciado por IA (próximamente).</span></div>
     </aside>`;
 }
 
+function wireCopilotPanel() {
+  const btn = $('[data-skill="explain-product"]');
+  if (btn) btn.addEventListener('click', onExplainProductClick);
+}
+
+function refreshCopilotPanel() {
+  const el = $('.copilot-panel');
+  if (!el) return; // sin producto seleccionado, el panel no está montado
+  el.outerHTML = copilotPanelHTML();
+  wireCopilotPanel();
+}
+
+function onExplainProductClick() {
+  if (copilotExplain.status === 'loading' || p360Current < 0) return;
+
+  copilotExplain = { status: 'loading', text: null, source: null, generatedAt: null, error: null };
+  refreshCopilotPanel();
+
+  // maxPerType alto: la habilidad "Explicar producto" lee relaciones.detalle
+  // para extraer beneficios y un ejemplo concreto, y se beneficia de ver más
+  // muestras por tipo que el default (8) usado en el resto del sistema.
+  let context;
+  try {
+    context = ContextBuilder.build(p360Current, { maxPerType: 15 });
+  } catch (err) {
+    copilotExplain = { status: 'error', text: null, source: null, generatedAt: null, error: err.message };
+    refreshCopilotPanel();
+    return;
+  }
+  if (!context) {
+    copilotExplain = { status: 'error', text: null, source: null, generatedAt: null, error: 'No se pudo construir el contexto de este producto.' };
+    refreshCopilotPanel();
+    return;
+  }
+
+  ResponseProvider.get().explainProduct(context)
+    .then(res => {
+      copilotExplain = { status: 'done', text: res.text, source: res.source, generatedAt: res.generatedAt, error: null };
+      refreshCopilotPanel();
+    })
+    .catch(err => {
+      copilotExplain = { status: 'error', text: null, source: null, generatedAt: null, error: err.message || 'Ocurrió un error generando la respuesta.' };
+      refreshCopilotPanel();
+    });
+}
+
 function openProduct(i) {
   p360Current = i;
   p360Expanded.clear();
+  copilotExplain = { status: 'idle', text: null, source: null, generatedAt: null, error: null };
   showView('p360');
   renderP360();
 }
@@ -442,6 +537,7 @@ function renderP360() {
     </div>`;
 
   $('#p360-to-engine').addEventListener('click', () => { engineState.product = i; showView('motores'); renderMotores(); });
+  wireCopilotPanel();
   v.querySelectorAll('a[data-i]').forEach(a => a.addEventListener('click', () => openProduct(+a.dataset.i)));
   v.querySelectorAll('[data-g]').forEach(b => b.addEventListener('click', () => {
     const t = +b.dataset.g;

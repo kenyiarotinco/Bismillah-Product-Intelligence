@@ -1,6 +1,20 @@
-# ARCHITECTURE — Context Builder (Fase 2, Paso 2)
+# ARCHITECTURE — AI Sales Copilot: Context Builder & Response Provider (Fase 2)
 
-## Responsabilidad
+Este documento cubre los dos módulos de datos/lógica que sostienen al AI
+Sales Copilot, en el orden en que los atraviesa una petición:
+
+```
+Usuario → AI Sales Copilot (panel, app.js) → Context Builder → Response Provider → Respuesta en el panel
+```
+
+- **Context Builder** (Paso 2): construye el contexto de un producto.
+- **Response Provider** (Paso 3): a partir de ese contexto, genera la
+  respuesta de una habilidad concreta del Copilot (por ahora, solo
+  "Explicar producto").
+
+## Context Builder (Fase 2, Paso 2)
+
+### Responsabilidad
 
 `assets/js/context-builder.js` recibe un producto (índice o SKU) y devuelve un
 objeto JSON-serializable con todo lo que el proyecto sabe hoy sobre ese
@@ -12,7 +26,7 @@ alcance, seguirá con: *Context Builder → formateo de prompt → llamada a un
 proveedor de IA → render en el panel AI Sales Copilot*. Este paso entrega
 únicamente el primer eslabón.
 
-## Por qué es un módulo independiente
+### Por qué es un módulo independiente
 
 `app.js` ya calcula estructuras equivalentes (`P`, `adj`, `famOf`, `uniOf`)
 para dibujar Producto 360, pero están acopladas al ciclo de vida de la UI:
@@ -39,7 +53,7 @@ resto del proyecto usa globals de script planos (sin bundler ni ES modules).
 Todo lo interno vive en el closure — cero colisión con los identificadores
 top-level de `app.js` (`P`, `adj`, `N`, `TYPE_META`, etc.).
 
-## Contrato
+### Contrato
 
 ```js
 ContextBuilder.build(productRef, options?)
@@ -119,20 +133,17 @@ Forma del objeto devuelto:
   resto del proyecto (`searchProducts` devuelve `[]`, no lanza) — un
   producto inexistente es un caso esperado, no un error de programación.
 
-## Fuera de alcance (deliberado)
+### Fuera de alcance (deliberado, en el Paso 2)
 
 - No arma el *prompt* de texto que eventualmente se le pasaría a un modelo
   — eso presupone decisiones (idioma del prompt, formato, proveedor) que
-  corresponden a la siguiente especificación, no a este paso.
-- No se invoca desde ningún sitio todavía: ni Producto 360 ni el panel AI
-  Sales Copilot llaman a `ContextBuilder`. El módulo existe, está probado,
-  pero permanece "desconectado" hasta que se apruebe el paso que lo
-  conecte.
+  corresponden a la siguiente especificación, no a este paso. (Esa pieza
+  llegó en el Paso 3 como el Response Provider — ver más abajo.)
 - No incluye caché/memoización de la adyacencia entre llamadas: con el
   tamaño actual del catálogo el recálculo es insignificante, y agregar una
   capa de caché sin una necesidad medida sería complejidad especulativa.
 
-## QA
+### QA — Context Builder
 
 `scripts/verify-context-builder.js` — smoke test headless en Node (mismo
 enfoque que las pruebas de búsqueda/filtros/motores descritas en
@@ -170,3 +181,226 @@ Verificación adicional en navegador: `index.html` con el nuevo
 `<script src="assets/js/context-builder.js">` cargado antes de `app.js` —
 `ContextBuilder` disponible en consola, Producto 360 y el panel AI Sales
 Copilot se renderizan igual que antes de este paso, sin errores de consola.
+
+## Response Provider (Fase 2, Paso 3)
+
+### Responsabilidad
+
+Dado el contexto que entrega `ContextBuilder.build()`, generar la respuesta
+de texto de una habilidad concreta del Copilot. En este paso, una sola
+habilidad: **Explicar producto**. El módulo no sabe nada de productos, del
+grafo o de `DATA` — solo sabe transformar el objeto `context` que recibe en
+un `{skill, source, generatedAt, text}`. Tampoco decide cuándo se le invoca
+ni dónde se pinta la respuesta: eso lo orquesta `app.js` (ver más abajo).
+
+Son dos archivos con responsabilidades distintas, a propósito:
+
+- **`assets/js/response-provider.js`** — el *puerto*: define el contrato y
+  un registro (`ResponseProvider.use()` / `.get()`) de cuál proveedor está
+  activo. No sabe generar ningún texto por sí mismo.
+- **`assets/js/providers/local-response-provider.js`** — la *implementación*
+  local de ese contrato. Es un archivo que, en principio, podría borrarse y
+  reemplazarse por `providers/gemini-response-provider.js` sin que
+  `response-provider.js` cambie una sola línea.
+
+### Dónde vive y por qué ahí
+
+`response-provider.js` se ubica junto a `context-builder.js`, al mismo
+nivel (`assets/js/`), porque cumple el mismo rol arquitectónico: es
+infraestructura del Copilot, no parte de una vista. `providers/` es una
+carpeta aparte porque va a crecer — cuando exista un proveedor Gemini real,
+vivirá ahí también, como una alternativa intercambiable al local, nunca como
+un reemplazo que se edita en el mismo archivo.
+
+Ninguno de los dos depende de `app.js` ni del DOM. `local-response-provider.js`
+depende únicamente de la forma del objeto `context` (el contrato de
+`ContextBuilder`), nunca de cómo se construyó. Esto significa que todo el
+pipeline Context Builder → Response Provider se puede ejecutar y probar
+íntegramente en Node, sin navegador — tal como hace
+`scripts/verify-response-provider.js`.
+
+### Dónde vive la orquestación (y por qué ahí sí en app.js)
+
+Alguien tiene que decidir: cuándo se llama a `ContextBuilder.build()`, con
+qué opciones, cuándo se le pasa el resultado a `ResponseProvider`, y qué
+hacer con la respuesta (mostrarla, mostrar un error, mostrar "cargando").
+Esa pieza es UI por definición — vive en `app.js`, junto al resto del panel
+del Copilot (`copilotPanelHTML()`, `wireCopilotPanel()`,
+`onExplainProductClick()`). No se extrajo a un archivo aparte porque, a
+diferencia de Context Builder y Response Provider, esta pieza SÍ necesita el
+DOM y el estado de Producto 360 (`p360Current`) — no hay nada que ganar
+desacoplándola, y el proyecto no usa un framework de componentes que
+justifique una capa de "controlador" separada.
+
+Importante: la orquestación actualiza **solo el nodo `.copilot-panel`**
+(`refreshCopilotPanel()`, vía `outerHTML` + re-wiring), nunca llama de nuevo
+a `renderP360()` completo. Si lo hiciera, cada respuesta del Copilot
+volvería a dibujar el canvas de la órbita y perdería el scroll — un efecto
+secundario sobre Producto 360 que el enunciado de este paso prohíbe
+explícitamente. Esta es la garantía técnica, no solo de intención, de "no
+modificar Producto 360".
+
+### Contrato
+
+```js
+// response-provider.js — el puerto
+ResponseProvider.use(provider)   // registra el proveedor activo; valida que implemente explainProduct()
+ResponseProvider.get()           // devuelve el proveedor activo; lanza si no hay ninguno
+ResponseProvider.isReady()       // true/false
+
+// Contrato que debe cumplir cualquier proveedor:
+provider.explainProduct(context) => Promise<{
+  skill: 'explain-product',
+  source: string,        // 'local' | 'gemini' | ...
+  generatedAt: string,   // ISO 8601
+  text: string,
+}>
+```
+
+`context` es exactamente lo que devuelve `ContextBuilder.build()` — ningún
+proveedor ve el DOM, el índice de producto ni nada de `app.js`.
+
+### Cómo se conecta hoy (y cómo se desconecta)
+
+Una sola línea en `app.js`, junto a la definición de `COPILOT_SKILLS`:
+
+```js
+ResponseProvider.use(LocalResponseProvider);
+```
+
+Reemplazar el proveedor local por Gemini el día que se apruebe esa
+especificación es, literalmente, cambiar esa línea por:
+
+```js
+ResponseProvider.use(GeminiResponseProvider);
+```
+
+Nada más en el sistema necesita cambiar. Esto es cierto por tres decisiones
+de diseño concretas, no por buena voluntad:
+
+1. **Mismo contrato de entrada.** `GeminiResponseProvider.explainProduct`
+   recibiría el mismo objeto `context` que hoy recibe el local — el mismo
+   que ya produce `ContextBuilder.build()`. Ninguna parte del sistema que
+   arma el contexto necesita saber qué proveedor lo va a consumir.
+2. **Mismo contrato de salida.** Ambos proveedores devuelven
+   `{skill, source, generatedAt, text}`. La UI (`copilotSkillRowHTML()`,
+   `onExplainProductClick()`) solo lee `res.text` y `res.source` — nunca
+   asume nada sobre *cómo* se generó ese texto.
+3. **Async desde el día uno.** El proveedor local es 100 % síncrono por
+   dentro (no hay nada que esperar), pero `explainProduct()` devuelve una
+   `Promise` de todas formas. `onExplainProductClick()` ya está escrito como
+   `ResponseProvider.get().explainProduct(context).then(...).catch(...)` —
+   exactamente la forma que necesitará una llamada de red real a Gemini
+   (latencia de cientos de ms, posibilidad de error de red, timeout). El
+   cambio de "instantáneo" a "tarda 800 ms y a veces falla" no rompe ni una
+   línea del código que ya maneja los estados `loading` / `done` / `error`
+   en el panel, porque ese código nunca asumió que la Promise se resolvería
+   rápido.
+
+Lo que si tendría que decidirse en la especificación de ese paso futuro (no
+en este): manejo de API key / autenticación, límites de tasa, timeout y
+reintentos, y qué hacer si Gemini devuelve algo que no cumple el contrato
+(`text` vacío, respuesta bloqueada por seguridad, etc.) — nada de eso existe
+hoy porque no hay llamada de red que lo necesite.
+
+### Por qué el texto no fabrica nada
+
+`buildText()` en `local-response-provider.js` solo concatena fragmentos que
+existen literalmente en el `context`:
+
+- Nombre, universo, subcategoría, tags, audiencias → copiados tal cual de
+  `context.producto`.
+- "Beneficios asociados" → **no** es un campo del contexto. Se extrae con
+  una expresión regular (`/'([^']+)'/`) de las justificaciones de las
+  relaciones `MISMO_BENEFICIO` que ya vienen en `relaciones.detalle` — el
+  100 % de esas 21 justificaciones únicas en el catálogo (sintético y real)
+  sigue el patrón *"Ambos aportan al beneficio 'X' desde subcategorías
+  distintas"*, verificado en `scripts/verify-response-provider.js` antes de
+  escribir esta lógica. No es una heurística arriesgada: es leer un dato que
+  ya estaba ahí, en texto plano.
+- El resumen de relaciones y el "ejemplo concreto" (`pickExample`) usan
+  `relaciones.porTipo` y `relaciones.detalle` sin modificarlos.
+- Si `comercial.disponible` es `false` (siempre, hoy), el texto lo dice
+  explícitamente en vez de omitirlo en silencio — es más honesto que un
+  Copilot que simplemente no menciona precio, dejando al vendedor sin saber
+  si el dato no existe o si el Copilot lo olvidó.
+
+`TYPE_LABELS`, el pequeño diccionario de rótulos en español dentro del
+proveedor (`"MISMO_BENEFICIO" → "mismo beneficio"`), es la misma clase de
+decisión que `familiaCodigo` en el Context Builder (Paso 2): duplica 7
+entradas estables que también existen como `TYPE_META` en `app.js`, a
+propósito, para que el proveedor no dependa de `app.js` en absoluto. Es
+vocabulario de presentación, no un dato de negocio — el candidato correcto
+para vivir junto a quien lo usa, no en un módulo de datos compartido.
+
+### Por qué la respuesta se guarda en estado de módulo (`copilotExplain`)
+
+Sigue exactamente el patrón que ya usaba `p360Expanded` para "mostrar más"
+en los grupos de relaciones: una variable a nivel de módulo en `app.js`, que
+se reinicia en `openProduct()` (producto nuevo → explicación anterior ya no
+aplica) y sobrevive a los re-renders parciales de Producto 360 mientras el
+producto no cambie — por ejemplo, expandir un grupo de relaciones no borra
+la respuesta que el Copilot ya generó. Se verificó manualmente en navegador.
+
+### Fuera de alcance (deliberado, en el Paso 3)
+
+- Las otras cuatro habilidades (Comparar productos, Precio y disponibilidad,
+  Mejor alternativa, Venta cruzada inteligente) siguen en "Próximamente",
+  sin `data-skill` ni listener — el contrato de `ResponseProvider` solo
+  exige `explainProduct` hoy; se ampliará método por método cuando cada
+  habilidad tenga su propia especificación aprobada.
+- No hay proveedor Gemini, ni configuración de API key, ni ningún código de
+  red — ver la sección anterior sobre qué queda pendiente para ese paso.
+- No hay caché de respuestas entre productos ni entre sesiones: cada clic
+  reconstruye el contexto y regenera el texto. Con un proveedor local
+  instantáneo no hay necesidad real de cachear; puede revisarse cuando el
+  costo (latencia o cuota de API) de un proveedor real lo justifique.
+
+### QA — Response Provider
+
+`scripts/verify-response-provider.js` — mismo enfoque headless que el del
+Context Builder: carga `data.js` + `context-builder.js` +
+`response-provider.js` + `providers/local-response-provider.js` en un
+sandbox de Node, sin DOM ni red, y verifica:
+
+1. Guardrail estático sobre el **código ejecutable** (no los comentarios) de
+   los cuatro archivos del paso: cero referencias a `fetch`, `XMLHttpRequest`,
+   `document`, `window`, `gemini`, `openai`, `anthropic`. (Los comentarios sí
+   mencionan "Gemini" a propósito, como documentación de este mismo diseño
+   de intercambiabilidad — el check ignora comentarios para no confundir
+   documentación con integración real.)
+2. `ResponseProvider.use()` exige el contrato (rechaza un proveedor sin
+   `explainProduct`) y `isReady()` refleja el estado correctamente.
+3. `LocalResponseProvider` se registra y `get()` devuelve exactamente ese
+   proveedor.
+4. `explainProduct(context)` devuelve la forma exacta del contrato,
+   incluyendo que es una `Promise`.
+5. El texto nunca contiene lo que parecería un precio inventado, y siempre
+   menciona honestamente que los datos comerciales están pendientes de la
+   Fase 1.
+6. Cada beneficio citado en el texto se verifica contra las justificaciones
+   reales de ese producto — no basta con que el formato "se vea bien", se
+   comprueba que cada palabra citada exista en el dato fuente.
+7. `build(índice)` + `explainProduct` y `build(sku)` + `explainProduct` del
+   mismo producto producen exactamente el mismo texto.
+8. Un contexto inválido (`null`) rechaza la Promise en vez de lanzar de
+   forma síncrona o devolver algo inservible.
+9. **Los 1.094 productos del catálogo**, uno por uno, generan texto sin
+   lanzar ninguna excepción — no solo un puñado de casos de muestra.
+
+Resultado: **9/9 checks OK**. Se volvió a correr
+`scripts/verify-context-builder.js` en el mismo momento — **10/10 checks
+OK** — para confirmar que este paso no introdujo ninguna regresión en el
+Paso 2.
+
+Verificación adicional en navegador: producto con relaciones `SUSTITUYE`,
+`COMPLEMENTA` y `MISMO_BENEFICIO` (229 relaciones) y producto con solo
+`MISMA_CATEGORIA`/`MISMO_BENEFICIO` (10 relaciones, universo Farma) — clic
+real en "Explicar producto" en ambos, texto generado y mostrado
+correctamente en el panel. Estados `loading` → `done` verificados, estado
+`error` verificado forzando un proveedor que rechaza la Promise. Cambiar de
+producto reinicia el estado. "Mostrar más" en un grupo de relaciones no
+borra la respuesta ya generada. Layout responsive (375 px) verificado con
+la respuesta visible. Sin errores de consola en ningún caso. Habilidades
+2–5 permanecen visualmente idénticas a como quedaron aprobadas en el Paso 1
+("Próximamente", sin interacción).
