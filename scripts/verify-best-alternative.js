@@ -19,6 +19,7 @@ const ROOT = path.join(__dirname, '..');
 const FILES = {
   data: path.join(ROOT, 'assets', 'js', 'data.js'),
   contextBuilder: path.join(ROOT, 'assets', 'js', 'context-builder.js'),
+  responseProviderContract: path.join(ROOT, 'assets', 'js', 'response-provider-contract.js'),
   responseProvider: path.join(ROOT, 'assets', 'js', 'response-provider.js'),
   localProvider: path.join(ROOT, 'assets', 'js', 'providers', 'local-response-provider.js'),
 };
@@ -41,7 +42,7 @@ async function main() {
     const banned = ['fetch(', 'XMLHttpRequest', 'document.', 'window.', 'gemini', 'openai', 'anthropic'];
     const stripComments = src => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
     const offenders = [];
-    for (const key of ['responseProvider', 'localProvider']) {
+    for (const key of ['responseProviderContract', 'responseProvider', 'localProvider']) {
       const src = stripComments(fs.readFileSync(FILES[key], 'utf8'));
       const hits = banned.filter(b => src.toLowerCase().includes(b.toLowerCase()));
       if (hits.length) offenders.push(`${key}: ${hits.join(', ')}`);
@@ -51,7 +52,7 @@ async function main() {
 
   const sandbox = {};
   vm.createContext(sandbox);
-  for (const key of ['data', 'contextBuilder', 'responseProvider', 'localProvider']) {
+  for (const key of ['data', 'contextBuilder', 'responseProviderContract', 'responseProvider', 'localProvider']) {
     vm.runInContext(fs.readFileSync(FILES[key], 'utf8'), sandbox, { filename: path.basename(FILES[key]) });
   }
   const run = code => vm.runInContext(code, sandbox, { filename: 'assert.js' });

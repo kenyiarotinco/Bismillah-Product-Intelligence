@@ -78,10 +78,12 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin backend ni bui
 │   └── js/
 │       ├── app.js                 # Lógica de la aplicación (vistas, búsqueda, motores, canvas, orquestación del Copilot)
 │       ├── context-builder.js     # Construye el contexto de producto para el AI Sales Copilot (sin IA, sin red)
+│       ├── response-provider-contract.js  # Interfaz común que debe cumplir cualquier proveedor de respuestas (Fase 4)
 │       ├── response-provider.js   # Puerto: registro del proveedor de respuestas activo del Copilot (5 habilidades)
 │       ├── commercial-data-provider.js  # Adaptador: Context Builder pide datos comerciales por SKU, sin conocer su fuente (Fase 3)
 │       ├── providers/
-│       │   └── local-response-provider.js  # Proveedor local (sin IA, sin red) — las 5 habilidades del Copilot
+│       │   ├── local-response-provider.js  # Proveedor local (sin IA, sin red) — las 5 habilidades del Copilot, activo hoy
+│       │   └── ai-response-provider.js     # Placeholder de proveedor de IA (Fase 4) — cumple el contrato, rechaza toda llamada, inactivo
 │       └── data.js                # Dataset SINTÉTICO — es el dato por defecto del repo, versionado
 ├── production/                    # Perfil real — IGNORADO POR GIT (no existe en el repo clonado)
 │   ├── index.html
@@ -100,10 +102,11 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin backend ni bui
 │   ├── verify-compare-products.js   # QA headless (Node) de "Comparar productos"
 │   ├── verify-best-alternative.js   # QA headless (Node) de "Mejor alternativa"
 │   ├── verify-cross-sell.js         # QA headless (Node) de "Venta cruzada inteligente"
-│   └── verify-price-availability.js # QA headless (Node) de "Precio y disponibilidad"
+│   ├── verify-price-availability.js # QA headless (Node) de "Precio y disponibilidad"
+│   └── verify-ai-provider-abstraction.js # QA headless (Node) del contrato de proveedores y del placeholder de IA (Fase 4)
 └── docs/
-    ├── PROJECT_BRIEF.md           # Objetivo, dominio, alcance y supuestos del MVP; estado de las Fases 2 y 3
-    ├── ARCHITECTURE.md            # Arquitectura del AI Sales Copilot y de los datos comerciales (Fases 2-3)
+    ├── PROJECT_BRIEF.md           # Objetivo, dominio, alcance y supuestos del MVP; estado de las Fases 2-4
+    ├── ARCHITECTURE.md            # Arquitectura del AI Sales Copilot y de los datos comerciales (Fases 2-4)
     └── QUALITY_REPORT.md          # Resultados de verificación por categoría
 ```
 

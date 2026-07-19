@@ -1,4 +1,4 @@
-# ARCHITECTURE — AI Sales Copilot & Commercial Data (Fases 2-3)
+# ARCHITECTURE — AI Sales Copilot & Commercial Data (Fases 2-4)
 
 Este documento cubre los módulos de datos/lógica que sostienen al AI Sales
 Copilot, en el orden en que los atraviesa una petición:
@@ -1335,3 +1335,165 @@ del Copilot verificadas coexistiendo sin interferencia de estado, en
 ambos perfiles. Cambiar de producto reinicia las 5. Responsive (375 px)
 verificado con la respuesta completa visible. Sin errores de consola en
 ningún caso.
+
+## AI Provider Abstraction (Fase 4, Paso 1)
+
+### Objetivo: extraer un contrato ya implícito, no inventar uno nuevo
+
+Desde el Paso 3 (ver la sección "Response Provider" arriba),
+`response-provider.js` ya definía y exigía, en su propio código, la lista de
+métodos que un proveedor debe implementar (`REQUIRED_METHODS`, un array
+inline en `assertShape()`). Ese contrato ya era real y ya se cumplía — solo
+vivía escondido dentro del puerto, sin nombre propio ni forma de
+consultarlo de manera independiente. Este paso lo extrae a un módulo con
+identidad propia, `ResponseProviderContract`
+(`assets/js/response-provider-contract.js`), y crea `AIResponseProvider`
+como segundo proveedor que lo cumple — sin cambiar en ningún momento qué
+hace `LocalResponseProvider` ni cómo responde el Copilot hoy.
+
+```
+Context Builder → Response Provider Interface → { LocalResponseProvider (activo), AIResponseProvider (placeholder) }
+                          ↑
+              ResponseProviderContract (Fase 4, Paso 1)
+```
+
+### `ResponseProviderContract` — la interfaz nombrada
+
+```js
+ResponseProviderContract.METHODS          // ['explainProduct', 'compareProducts', 'bestAlternative', 'crossSell', 'priceAndAvailability']
+ResponseProviderContract.missingMethods(provider)  // string[] — nombres de métodos ausentes; provider nulo/indefinido devuelve los 5
+ResponseProviderContract.implementedBy(provider)   // boolean — missingMethods(provider).length === 0
+```
+
+Un módulo deliberadamente mínimo: no valida firmas de parámetros ni formas
+de retorno (eso ya lo hacen, indirectamente, los QA de cada habilidad
+contra datos reales) — solo la forma superficial que `ResponseProvider.use()`
+necesita para decidir si un proveedor es válido antes de activarlo.
+
+### `response-provider.js` pasa de definir el contrato a consultarlo
+
+`assertShape()` ya no mantiene su propio array de métodos requeridos:
+delega en `ResponseProviderContract.missingMethods(provider)`. `use()`,
+`get()` e `isReady()` no cambiaron ni una línea de su lógica ni su mensaje
+de error (`'ResponseProvider.use: el proveedor no implementa "X(context)".'`)
+— es una extracción pura, verificada como tal en QA (el texto exacto del
+error se comprueba con una aserción de regex dedicada).
+
+### `AIResponseProvider` — placeholder, no una integración
+
+```js
+// assets/js/providers/ai-response-provider.js
+AIResponseProvider.explainProduct()        // => Promise.reject(Error(...))
+AIResponseProvider.compareProducts()       // => Promise.reject(Error(...))
+AIResponseProvider.bestAlternative()       // => Promise.reject(Error(...))
+AIResponseProvider.crossSell()             // => Promise.reject(Error(...))
+AIResponseProvider.priceAndAvailability()  // => Promise.reject(Error(...))
+```
+
+Implementa las 5 claves del contrato (cumple `ResponseProviderContract`,
+verificado dinámicamente) pero cada método rechaza de inmediato con un
+mensaje que dice, literalmente, "todavía no implementado" — nunca resuelve,
+nunca fabrica una respuesta, nunca toca red. Existe únicamente para que
+`ResponseProvider.use(AIResponseProvider)` sea una operación válida hoy (un
+hecho comprobado en QA), preparando el terreno para que una fase futura
+reemplace el cuerpo de estos 5 métodos por llamadas reales — sin que ese
+cambio futuro toque `response-provider.js`, `response-provider-contract.js`
+ni ningún consumidor del panel.
+
+### Por qué `LocalResponseProvider` no se tocó
+
+El archivo `providers/local-response-provider.js` tiene cero diff en este
+paso — su conformidad con `ResponseProviderContract` se prueba llamando a
+`ResponseProviderContract.implementedBy(LocalResponseProvider)` en QA, no
+editando el archivo para "declarar" que implementa una interfaz (este
+proyecto no tiene ni necesita una noción de tipos/interfaces declaradas;
+JavaScript vainilla verifica forma en tiempo de ejecución, como ya hacía
+`assertShape()` desde el Paso 3). Es la misma razón por la que
+`ResponseProvider.use(LocalResponseProvider)` seguía funcionando sin
+cambios: el contrato que ahora tiene nombre propio es, byte a byte, el
+mismo que `LocalResponseProvider` ya cumplía.
+
+### Qué NO activa este paso
+
+`app.js` sigue teniendo una única línea de activación,
+`ResponseProvider.use(LocalResponseProvider);`, sin tocar. Los `<script>` de
+`response-provider-contract.js` y `providers/ai-response-provider.js` se
+agregaron a las tres páginas (`index.html`, `production/index.html`,
+`production.example/index.html`) para que ambos globals existan en el
+navegador — exactamente como ya existe `LocalResponseProvider` sin estar
+necesariamente en uso — pero ningún código de la aplicación llama a
+`AIResponseProvider` ni lo registra como proveedor activo. Verificado en
+navegador: `ResponseProvider.get() === LocalResponseProvider` sigue siendo
+cierto tras cargar la página.
+
+### Fuera de alcance (deliberado, en este paso)
+
+- Sin lógica de IA real, sin SDK de Gemini/OpenAI/Anthropic, sin llamada de
+  red — `AIResponseProvider` rechaza sus 5 métodos de forma síncrona con un
+  error, nada más.
+- Sin cambios en Context Builder, `CommercialDataProvider`, el pipeline
+  comercial, ni ninguna de las 5 habilidades de `LocalResponseProvider`.
+- Sin activar `AIResponseProvider` en `app.js` — sigue siendo, en este
+  paso, un proveedor registrable pero inactivo.
+
+### QA — AI Provider Abstraction
+
+`scripts/verify-ai-provider-abstraction.js` — mismo enfoque headless que
+los pasos anteriores: carga `data.js` + `context-builder.js` +
+`response-provider-contract.js` + `response-provider.js` +
+`providers/local-response-provider.js` + `providers/ai-response-provider.js`
+en un sandbox de Node, sin DOM ni red, y verifica:
+
+1. Guardrail estático sobre código ejecutable (no comentarios) de los 4
+   archivos de infraestructura del Copilot: cero referencias a `fetch`,
+   `XMLHttpRequest`, `document`, `window`, `gemini`, `openai`, `anthropic`.
+2. `ResponseProviderContract.METHODS` contiene exactamente las 5 habilidades
+   esperadas.
+3. `missingMethods()`/`implementedBy()` se comportan correctamente sobre un
+   objeto vacío, uno parcial (2 de 5 métodos) y uno completo.
+4. `missingMethods(null)`/`missingMethods(undefined)` no lanzan y reportan
+   las 5 como faltantes.
+5. `ResponseProviderContract.implementedBy(LocalResponseProvider) === true`
+   — verificado dinámicamente contra el archivo real, sin haberlo
+   modificado.
+6. `AIResponseProvider` existe como objeto global y también cumple el
+   contrato.
+7. Cada uno de los 5 métodos de `AIResponseProvider` rechaza su Promise con
+   un mensaje de error — ninguno resuelve con una respuesta fabricada.
+8. `ResponseProvider.use()` acepta tanto a `LocalResponseProvider` como a
+   `AIResponseProvider` (ambos son proveedores válidos por forma), y puede
+   alternar entre ambos sin lanzar.
+9. El mensaje de error de `ResponseProvider.use()` ante un proveedor
+   incompleto no cambió tras la extracción del contrato (mismo texto exacto
+   que en el Paso 3).
+10. Regresión explícita: `LocalResponseProvider`, reactivado como proveedor,
+    sigue respondiendo con la forma correcta en sus 5 habilidades
+    (`explainProduct`, `compareProducts`, `bestAlternative`, `crossSell`,
+    `priceAndAvailability`).
+
+Resultado: **10/10 checks OK**. Se volvieron a correr las 7 suites
+anteriores en el mismo momento —
+`scripts/verify-context-builder.js` (**10/10**),
+`scripts/verify-commercial-data.js` (**8/8**),
+`scripts/verify-response-provider.js` (**9/9**),
+`scripts/verify-compare-products.js` (**10/10**),
+`scripts/verify-best-alternative.js` (**10/10**),
+`scripts/verify-cross-sell.js` (**10/10**) y
+`scripts/verify-price-availability.js` (**12/12**) — cero regresión sobre
+las Fases 2 y 3. Las 5 primeras necesitaron un ajuste mínimo (no
+funcional): cargar también `response-provider-contract.js` en su sandbox de
+Node, en el mismo orden que ahora exige `response-provider.js` en
+navegador, ya que dejó de traer su lista de métodos inline.
+
+Verificación en navegador (perfil demo): sin errores de consola;
+`typeof ResponseProviderContract === 'object'` y
+`typeof AIResponseProvider === 'object'` en ambas páginas;
+`ResponseProviderContract.implementedBy(LocalResponseProvider)` y
+`...implementedBy(AIResponseProvider)` ambos `true`; `ResponseProvider.get()
+=== LocalResponseProvider` tras la carga (ningún cambio de proveedor
+activo). Flujo completo probado en Producto 360: "Venta cruzada
+inteligente" (habilidad 5) generó recomendaciones reales y correctamente
+justificadas, exactamente igual que antes de este paso — prueba funcional
+de que el refactor del puerto no alteró el comportamiento visible del
+Copilot. Sin cambio visual en el panel; las 5 habilidades siguen
+mostrándose idénticas a como quedaron tras la Fase 3.

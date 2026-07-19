@@ -17,6 +17,7 @@ const ROOT = path.join(__dirname, '..');
 const FILES = {
   data: path.join(ROOT, 'assets', 'js', 'data.js'),
   contextBuilder: path.join(ROOT, 'assets', 'js', 'context-builder.js'),
+  responseProviderContract: path.join(ROOT, 'assets', 'js', 'response-provider-contract.js'),
   responseProvider: path.join(ROOT, 'assets', 'js', 'response-provider.js'),
   localProvider: path.join(ROOT, 'assets', 'js', 'providers', 'local-response-provider.js'),
 };
@@ -60,7 +61,7 @@ async function main() {
   // ---- carga en sandbox aislado, mismo orden que los <script> en index.html ----
   const sandbox = {};
   vm.createContext(sandbox);
-  for (const key of ['data', 'contextBuilder', 'responseProvider', 'localProvider']) {
+  for (const key of ['data', 'contextBuilder', 'responseProviderContract', 'responseProvider', 'localProvider']) {
     vm.runInContext(fs.readFileSync(FILES[key], 'utf8'), sandbox, { filename: path.basename(FILES[key]) });
   }
   const run = code => vm.runInContext(code, sandbox, { filename: 'assert.js' });

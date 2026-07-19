@@ -1,4 +1,4 @@
-/* Bismillah Product Intelligence Platform — Response Provider (Fase 2, Pasos 3-6; Fase 3, Paso 2)
+/* Bismillah Product Intelligence Platform — Response Provider (Fase 2, Pasos 3-6; Fase 3, Paso 2; Fase 4, Paso 1)
  *
  * Puerto/contrato que desacopla al AI Sales Copilot de CÓMO se generan sus
  * respuestas. Cualquier proveedor —el local de hoy, o más adelante Google
@@ -79,19 +79,24 @@
  *
  * Con `priceAndAvailability` quedan las 5 habilidades planificadas del
  * Copilot implementadas en el contrato.
+ *
+ * Fase 4, Paso 1: la lista de métodos exigidos ya no vive aquí como un
+ * array propio — se delega a `ResponseProviderContract`
+ * (response-provider-contract.js), la interfaz común y nombrada que
+ * cualquier proveedor (local o de IA) debe cumplir. `use()`, `get()` e
+ * `isReady()` mantienen exactamente la misma forma y el mismo mensaje de
+ * error de antes — es una extracción, no un cambio de comportamiento.
  */
 'use strict';
 
 const ResponseProvider = (function () {
-  const REQUIRED_METHODS = ['explainProduct', 'compareProducts', 'bestAlternative', 'crossSell', 'priceAndAvailability'];
   let active = null;
 
   function assertShape(provider) {
     if (!provider) throw new Error('ResponseProvider.use: el proveedor no puede ser nulo/indefinido.');
-    for (const method of REQUIRED_METHODS) {
-      if (typeof provider[method] !== 'function') {
-        throw new Error(`ResponseProvider.use: el proveedor no implementa "${method}(context)".`);
-      }
+    const missing = ResponseProviderContract.missingMethods(provider);
+    if (missing.length) {
+      throw new Error(`ResponseProvider.use: el proveedor no implementa "${missing[0]}(context)".`);
     }
   }
 
