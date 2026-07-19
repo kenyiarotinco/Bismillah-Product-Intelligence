@@ -39,3 +39,6 @@ Se integra el registro R-PIG-01…06 del catálogo maestro dentro de Panorama pa
 
 ## Criterio de éxito
 Un analista encuentra un producto en <5 s, entiende su red en una pantalla y obtiene una lista de venta cruzada justificada sin salir de la herramienta.
+
+## Fase 2 — AI Sales Copilot (en curso)
+Paso 1 (aprobado): scaffold visual del panel lateral **AI Sales Copilot** en Producto 360 — layout de dos columnas con panel sticky en la columna derecha, cinco habilidades planificadas (Explicar producto, Comparar productos, Precio y disponibilidad, Mejor alternativa, Venta cruzada inteligente), todas en estado "Próximamente". Es exclusivamente interfaz: sin lógica de negocio, sin llamadas a APIs, sin integración de IA (Gemini u otro proveedor). Los pasos siguientes de esta fase requieren su propia especificación (Product/UI/Technical Spec + criterios de aceptación) antes de implementarse.

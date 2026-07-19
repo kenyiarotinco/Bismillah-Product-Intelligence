@@ -317,6 +317,45 @@ function exList() {
 let p360Current = -1;
 const p360Expanded = new Set();
 
+/* ---------- ai sales copilot (UI only, sin lógica ni IA conectada) ---------- */
+const COPILOT_SKILLS = [
+  { icon: '🤖', title: 'Explicar producto', desc: 'Explica beneficios, usos y público objetivo.', bg: 'var(--emerald-tint)', fg: 'var(--emerald-dk)' },
+  { icon: '⚖️', title: 'Comparar productos', desc: 'Compara dos productos comercialmente.', bg: 'var(--indigo-tint)', fg: 'var(--indigo)' },
+  { icon: '💰', title: 'Precio y disponibilidad', desc: 'Consulta precio, stock y estado.', bg: 'var(--amber-tint)', fg: '#8A5A14' },
+  { icon: '💲', title: 'Mejor alternativa', desc: 'Encuentra el mejor sustituto.', bg: 'rgba(122,95,191,.14)', fg: 'var(--t2)' },
+  { icon: '🧠', title: 'Venta cruzada inteligente', desc: 'Sugiere productos complementarios y explica por qué recomendarlos.', bg: 'rgba(194,85,127,.14)', fg: 'var(--t5)' },
+];
+
+function copilotPanelHTML() {
+  return `
+    <aside class="card copilot-panel">
+      <div class="copilot-top">
+        <span class="copilot-avatar">🤖</span>
+        <div class="copilot-top-txt">
+          <div class="copilot-top-row"><h3>AI Sales Copilot</h3><span class="copilot-pill">Próximamente</span></div>
+          <p class="copilot-sub">Tu asistente inteligente para vender más y mejor.</p>
+        </div>
+      </div>
+      <div class="copilot-skills-h">
+        <span>Mis 5 habilidades</span>
+        <span class="copilot-info" title="Habilidades planificadas para el AI Sales Copilot">i</span>
+      </div>
+      <div class="copilot-skills">
+        ${COPILOT_SKILLS.map((s, idx) => `
+          <button class="copilot-row" type="button">
+            <span class="copilot-ic" style="background:${s.bg};color:${s.fg}">${s.icon}<span class="copilot-ic-n">${idx + 1}</span></span>
+            <span class="copilot-row-txt">
+              <span class="copilot-row-title">${s.title}</span>
+              <span class="copilot-row-desc">${s.desc}</span>
+              <span class="copilot-row-status">Próximamente</span>
+            </span>
+            <span class="copilot-chev">›</span>
+          </button>`).join('')}
+      </div>
+      <div class="copilot-foot"><span class="copilot-foot-ic">🛡️</span><span>Respuestas basadas en tu catálogo, inventario y relaciones internas — potenciado por IA (próximamente).</span></div>
+    </aside>`;
+}
+
 function openProduct(i) {
   p360Current = i;
   p360Expanded.clear();
@@ -337,6 +376,8 @@ function renderP360() {
   const tags = p[4] ? p[4].split(',').map(s => s.trim()).filter(Boolean) : [];
 
   v.innerHTML = `
+    <div class="p360-layout">
+    <div class="p360-content">
     <div class="p360-head">
       <div class="who">
         <span class="eyebrow">SKU ${p[0]}</span>
@@ -395,6 +436,9 @@ function renderP360() {
           ${g.length > 5 ? `<button class="showmore" data-g="${t}">${open ? 'Mostrar menos' : `Mostrar los ${g.length - 5} restantes`}</button>` : ''}
         </div>`;
       }).join('')}
+    </div>
+    </div>
+    ${copilotPanelHTML()}
     </div>`;
 
   $('#p360-to-engine').addEventListener('click', () => { engineState.product = i; showView('motores'); renderMotores(); });

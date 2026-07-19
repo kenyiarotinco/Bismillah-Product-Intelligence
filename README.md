@@ -25,7 +25,7 @@ Generado como primer MVP público con el **DULCE Engineering System**.
 |---|---|
 | **Panorama** | Salud del grafo: KPIs, distribución por tipo, confianza por tipo, mezcla Bienestar/Farma, hubs de conectividad, registro de riesgos. |
 | **Explorador** | Búsqueda por nombre/SKU/tags, filtros por universo, familia, audiencia y tipo de relación. |
-| **Producto 360** | Ficha con órbita de relaciones (grafo ego interactivo en canvas), relaciones agrupadas por tipo con justificación y confianza. |
+| **Producto 360** | Ficha con órbita de relaciones (grafo ego interactivo en canvas), relaciones agrupadas por tipo con justificación y confianza. Incluye el panel lateral **AI Sales Copilot** (Fase 2, Paso 1 — solo interfaz, sin lógica ni IA conectada todavía). |
 | **Motores** | Simulador de recomendación: venta cruzada, sustitución y variantes, con scoring transparente y exclusión de confianza Baja por defecto. |
 
 Los cuatro módulos, todos los KPIs, gráficos, filtros y motores de recomendación funcionan **de forma idéntica** en ambos perfiles de despliegue descritos abajo — la única diferencia entre ellos es de dónde vienen los nombres de producto.
