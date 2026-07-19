@@ -67,7 +67,7 @@ Ver [ARCHITECTURE.md](docs/ARCHITECTURE.md#commercial-data-provider-fase-3-paso-
 
 ## Estructura del repositorio
 
-SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin backend ni build step. La lógica de la aplicación y el sistema de diseño son 100 % compartidos entre perfiles; solo cambia el archivo de datos.
+SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin build step. La lógica de la aplicación y el sistema de diseño son 100 % compartidos entre perfiles; solo cambia el archivo de datos. El frontend sigue sin backend — la única excepción es `server/` (Fase 4), un proxy Node opcional y desactivado por defecto, necesario únicamente para que una API key de IA nunca viaje al navegador (ver `docs/ARCHITECTURE.md`, sección "Gemini Proxy Server").
 
 ```
 .
@@ -96,6 +96,9 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin backend ni bui
 │   ├── index.html
 │   ├── data.js.example            # Plantilla del formato de datos (3 productos de muestra)
 │   └── commercial-data.js.example # Plantilla del formato de datos comerciales (1 registro de muestra)
+├── server/                        # Fase 4 — única excepción a "sin backend"; opcional, desactivado por defecto
+│   ├── gemini-proxy-server.js     # Proxy Node: única pieza que conoce la API real de Gemini y lee GEMINI_API_KEY
+│   └── .env.example               # Plantilla de variables de entorno — sin ningún secreto real
 ├── scripts/
 │   ├── generate-demo-data.js        # Genera assets/js/data.js a partir de production/data.js
 │   ├── import-commercial-data.js    # Genera production/commercial-data.js desde el pipeline comercial externo
@@ -108,7 +111,8 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin backend ni bui
 │   ├── verify-price-availability.js # QA headless (Node) de "Precio y disponibilidad"
 │   ├── verify-ai-provider-abstraction.js # QA headless (Node) del contrato de proveedores y del placeholder de IA (Fase 4)
 │   ├── verify-prompt-context-builder.js  # QA headless (Node) del Prompt Context Builder (Fase 4)
-│   └── verify-remote-response-provider.js # QA headless (Node) del Remote Response Provider: integración, fallback y flag desactivado (Fase 4)
+│   ├── verify-remote-response-provider.js # QA headless (Node) del Remote Response Provider: integración, fallback, timeout y flag desactivado (Fase 4)
+│   └── verify-gemini-proxy-server.js      # QA headless (Node) del Gemini Proxy Server: servidor HTTP real + end-to-end con RemoteResponseProvider (Fase 4)
 └── docs/
     ├── PROJECT_BRIEF.md           # Objetivo, dominio, alcance y supuestos del MVP; estado de las Fases 2-4
     ├── ARCHITECTURE.md            # Arquitectura del AI Sales Copilot y de los datos comerciales (Fases 2-4)

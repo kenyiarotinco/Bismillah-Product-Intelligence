@@ -53,6 +53,16 @@ function assert(cond, msg) {
 function freshSandbox({ featureFlags, remoteConfig, fetchImpl } = {}) {
   const sandbox = {};
   vm.createContext(sandbox);
+  // Un vm.createContext() vacío NO trae setTimeout/clearTimeout/AbortController
+  // — sin inyectarlos, el manejo de timeout de RemoteResponseProvider (Fase 4,
+  // Paso 4) queda en silencio como no-op (typeof AbortController === 'undefined'
+  // dentro del sandbox) y una Promise que solo se resuelve por un abort() nunca
+  // se resuelve — el proceso de Node termina sin imprimir nada en cuanto no
+  // queda nada más pendiente en el event loop. Se inyectan aquí, igual que ya
+  // se inyecta `fetch`.
+  sandbox.setTimeout = setTimeout;
+  sandbox.clearTimeout = clearTimeout;
+  sandbox.AbortController = AbortController;
   if (featureFlags !== undefined) vm.runInContext(`var FEATURE_FLAGS = ${JSON.stringify(featureFlags)};`, sandbox);
   if (remoteConfig !== undefined) vm.runInContext(`var REMOTE_PROVIDER_CONFIG = ${JSON.stringify(remoteConfig)};`, sandbox);
   if (fetchImpl) sandbox.fetch = fetchImpl;
@@ -206,6 +216,39 @@ async function main() {
       })()
     `);
     assert(ok, 'una respuesta remota con forma inesperada debería caer automáticamente a Local, con el mismo resultado');
+  });
+
+  await check('flag activado + config presente + fetch NUNCA resuelve (cuelgue de red): el timeout aborta la petición y cae a Local automáticamente', async () => {
+    const sandbox = freshSandbox({
+      featureFlags: { remoteResponseProvider: true },
+      remoteConfig: { endpoint: 'https://example.invalid/copilot', timeoutMs: 50 },
+      // Simula el comportamiento real de fetch bajo AbortController: nunca
+      // resuelve por sí sola, pero rechaza en cuanto se aborta la señal —
+      // así se prueba que RemoteResponseProvider realmente arma y dispara
+      // el AbortController, no que "por casualidad" nunca cuelga el test.
+      fetchImpl: (url, opts) => new Promise((resolve, reject) => {
+        if (opts && opts.signal) {
+          opts.signal.addEventListener('abort', () => {
+            const err = new Error('The operation was aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        }
+      }),
+    });
+    const run = code => vm.runInContext(code, sandbox, { filename: 'assert.js' });
+    const start = Date.now();
+    const ok = await run(`
+      (async function () {
+        const ctx = ContextBuilder.build(0, { maxPerType: 15 });
+        const [r, l] = await Promise.all([RemoteResponseProvider.explainProduct(ctx), LocalResponseProvider.explainProduct(ctx)]);
+        const strip = (${stripTimestamp.toString()});
+        return JSON.stringify(strip(r)) === JSON.stringify(strip(l));
+      })()
+    `);
+    const elapsedMs = Date.now() - start;
+    assert(ok, 'un cuelgue de red debería, tras agotarse el timeout, caer automáticamente a Local, con el mismo resultado');
+    assert(elapsedMs < 2000, `el timeout de 50ms debería haber abortado la petición mucho antes de ${elapsedMs}ms — el AbortController no parece estar funcionando`);
   });
 
   await check('flag activado + config presente + fetch resuelve ok con .json() que lanza (JSON inválido): cae a Local automáticamente', async () => {

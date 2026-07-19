@@ -1957,3 +1957,216 @@ reales exactamente igual que antes de este paso — prueba funcional
 definitiva de que introducir el mecanismo completo (flag + proveedor
 remoto + fallback) sin habilitarlo no altera en absoluto el comportamiento
 visible del Copilot.
+
+## Gemini Proxy Server (Fase 4, Paso 4)
+
+### La tensión estructural, resuelta antes de escribir código
+
+El proyecto es, desde el MVP original, explícitamente "sin backend, sin
+build step" (`docs/PROJECT_BRIEF.md`). El requisito de este paso —"la API
+key debe almacenarse exclusivamente en el backend o mediante variables de
+entorno; nunca en el frontend"— es imposible de cumplir sin introducir, por
+primera vez en todo el proyecto, una pieza de servidor real: un navegador
+no puede leer `process.env`, y cualquier key embebida en `assets/js/`
+quedaría visible para cualquiera que abra las herramientas de desarrollador.
+Antes de escribir una sola línea se presentó esta tensión al usuario (mismo
+patrón ya usado en la Fase 3, Paso 1, ante un límite estructural similar) y
+se confirmaron dos decisiones explícitas: (1) sí, construir un servidor
+Node real y ejecutable dentro del repositorio; (2) la QA de este paso se
+mantiene 100% simulada, sin ninguna llamada real a la API de Gemini ni
+necesidad de una key real en esta sesión.
+
+### `server/gemini-proxy-server.js` — la única excepción a "sin backend"
+
+Servidor HTTP mínimo, sin dependencias externas (usa únicamente el módulo
+`http` de Node — mismo espíritu "sin build step" que ya rige
+`scripts/*.js`), que expone `POST /copilot` y es la única pieza de todo el
+sistema que:
+
+1. Conoce el formato real de la API de Gemini (`generateContent`).
+2. Lee `GEMINI_API_KEY` — exclusivamente de `process.env`, nunca del cuerpo
+   de la petición del cliente (verificado en QA por inspección del código
+   fuente, no solo por comportamiento observado).
+3. Traduce un `{skill, promptContext}` a un prompt de texto para el modelo
+   (`buildPrompt()`) y de vuelta a la forma del contrato
+   (`{skill, source:'gemini', generatedAt, ...}`).
+
+```
+Navegador                          server/gemini-proxy-server.js              Gemini API
+RemoteResponseProvider  ──POST──▶  /copilot (lee GEMINI_API_KEY de env)  ──▶  generateContent
+                         ◀─────── {skill, source:'gemini', ...}         ◀───  candidates[...]
+```
+
+`assets/js/` (todo lo que se sirve al navegador) no importa ni referencia
+este archivo en absoluto — `RemoteResponseProvider` solo conoce "un
+endpoint HTTP que responde con la forma del contrato", exactamente el mismo
+contrato genérico que ya esperaba desde el Paso 3, antes de que este
+servidor existiera.
+
+### Cómo ejecutarlo
+
+```
+GEMINI_API_KEY=<tu-key> node server/gemini-proxy-server.js
+```
+
+Variables de entorno soportadas (documentadas también en
+`server/.env.example`, un archivo de ejemplo sin ningún secreto real):
+`GEMINI_API_KEY` (obligatoria para responder con éxito), `GEMINI_MODEL`,
+`PORT`, `GEMINI_TIMEOUT_MS`, `ALLOWED_ORIGIN`. Sin `GEMINI_API_KEY`, el
+servidor arranca igual (para poder probarse) pero responde `500` a toda
+petición real — nunca falla en silencio ni inventa una respuesta.
+
+### Por qué `RemoteResponseProvider` no cambió su relación con Gemini (porque no tiene ninguna)
+
+El único cambio de este paso en `assets/js/providers/remote-response-provider.js`
+es agregar manejo de **timeout** (`AbortController`, configurable vía
+`REMOTE_PROVIDER_CONFIG.timeoutMs`, con `DEFAULT_TIMEOUT_MS = 8000` de
+respaldo) a la llamada `fetch` que ya existía desde el Paso 3. Es una
+preocupación de transporte HTTP genérica — cualquier backend detrás del
+endpoint la necesitaría, sea Gemini, OpenAI o Claude — por eso vive aquí y
+no en `server/gemini-proxy-server.js`. Ningún otro cambio: `callRemote()`
+sigue sin saber qué hay detrás de `REMOTE_PROVIDER_CONFIG.endpoint`. Esto
+es, literalmente, lo que satisface el requisito de "mantener
+RemoteResponseProvider agnóstico al proveedor" — no por una abstracción
+nueva que se construyó en este paso, sino porque ese proveedor nunca tuvo
+ningún acoplamiento a Gemini que hubiera que quitar. Incorporar OpenAI o
+Claude en el futuro significa escribir `server/openai-proxy-server.js` (o
+similar) y apuntar `REMOTE_PROVIDER_CONFIG.endpoint` a ese otro proceso —
+cero cambios en `remote-response-provider.js`.
+
+### El error síncrono del sandbox de QA, encontrado y corregido antes de reportar resultados
+
+Al agregar el test de timeout a `scripts/verify-remote-response-provider.js`,
+la primera corrida no imprimió NINGÚN resultado y terminó con código de
+salida 0 — ni un solo check reportado. Causa raíz: `vm.createContext({})`
+crea un sandbox vacío que NO incluye `setTimeout`/`clearTimeout`/
+`AbortController` (a diferencia de `fetch`, que ya se inyectaba
+explícitamente desde el Paso 3). Dentro del sandbox,
+`typeof AbortController !== 'undefined'` se evaluaba `false`, así que
+`callRemote()` nunca armaba ningún temporizador — el mock de `fetch` del
+test de timeout, diseñado para colgarse hasta que se abortara la señal,
+literalmente nunca recibía ningún `signal` y quedaba pendiente para
+siempre. Sin ningún timer activo, el event loop de Node quedaba vacío a
+mitad de un `await` y el proceso terminaba solo, sin haber llegado nunca al
+bucle de reporte final. Se corrigió inyectando `setTimeout`, `clearTimeout`
+y `AbortController` reales de Node en `freshSandbox()` — el mismo tipo de
+gotcha del `vm` de Node ya documentado dos veces antes en este archivo
+(top-level `const` no expuesto como propiedad del sandbox), ahora con un
+tercer caso: globals de temporización que hay que inyectar explícitamente,
+no solo el dataset o los módulos bajo prueba.
+
+### Seguridad: qué se decidió y por qué
+
+- **La API key nunca se acepta desde la petición del cliente** — ni en el
+  cuerpo, ni en query string, ni en un header enviado por el navegador.
+  Solo se lee una vez, al arrancar el proceso, desde `process.env`.
+- **La key se envía a Gemini por header (`x-goog-api-key`), nunca en la URL**
+  — evita que quede expuesta en logs de acceso o en el historial de
+  cualquier proxy/CDN intermedio.
+- **CORS restringido a localhost por defecto.** Sin `ALLOWED_ORIGIN`
+  configurado explícitamente, `isOriginAllowed()` solo acepta orígenes
+  `http://localhost`/`http://127.0.0.1` — suficiente para desarrollo local,
+  y deliberadamente NO permisivo (`*`) por defecto, para que un despliegue
+  real tenga que decidir y declarar su origen explícitamente en vez de
+  heredar un valor por defecto inseguro.
+- **`source`/`generatedAt` los fija el servidor, nunca el modelo** — misma
+  disciplina que ya aplica `LocalResponseProvider`: son metadata del
+  sistema, no contenido en el que se confíe a ciegas.
+- **`.gitignore` ya cubría `.env`/`.env.*`** desde antes de este paso — no
+  fue necesario ningún cambio; `server/.env.example` no contiene ningún
+  secreto real.
+
+### Fuera de alcance (deliberado, en este paso)
+
+- Sin despliegue real de este servidor a ningún hosting — es un
+  script Node ejecutable localmente. Dónde y cómo desplegarlo en
+  producción es una decisión pendiente, fuera del alcance de este paso.
+- Sin `GEMINI_API_KEY` real configurada en ningún entorno de este
+  repositorio ni de esta sesión — por decisión explícita del usuario, toda
+  la QA de este paso permanece simulada.
+- Sin autenticación adicional entre el frontend y este proxy (más allá de
+  CORS) — hoy nada lo necesita, porque ningún perfil del repositorio activa
+  el feature flag; sería una decisión a tomar junto con la de despliegue
+  real.
+- Sin soporte para otros proveedores (OpenAI, Claude) todavía — el diseño
+  los deja igual de fáciles de agregar que Gemini (un proxy nuevo,
+  independiente), pero construirlos no fue pedido en este paso.
+- Sin cambios en `ContextBuilder`, `CommercialDataProvider`, el pipeline
+  comercial, `LocalResponseProvider`, `PromptContextBuilder` ni
+  `AIResponseProvider` — cero diff en los cinco.
+
+### QA — Remote Response Provider (ampliada) y Gemini Proxy Server (nueva)
+
+**`scripts/verify-remote-response-provider.js`** ganó un check nuevo sobre
+los 14 ya existentes del Paso 3 — **15/15 checks OK**:
+
+15. Flag activado + config presente + `fetch` nunca resuelve (cuelgue de
+    red simulado, respetando `AbortController` igual que el `fetch` real):
+    el timeout configurado (`50ms` en el test) aborta la petición y cae a
+    Local automáticamente — verificado también que el tiempo total del test
+    es coherente con ese timeout, no con haberse colgado indefinidamente.
+
+**`scripts/verify-gemini-proxy-server.js`** (nuevo) — combina pruebas
+unitarias de las funciones internas del servidor con pruebas de servidor
+HTTP real (puerto efímero vía `port: 0`) y una prueba end-to-end genuina:
+
+1. El archivo referencia realmente `generativelanguage.googleapis.com` (no
+   es otro placeholder inerte) y no referencia SDKs de otros proveedores.
+2. La API key nunca se lee desde el cuerpo de la petición del cliente —
+   verificado por inspección del código fuente.
+3. `buildPrompt()` incluye el contenido real del `PromptContext`, la regla
+   explícita de "nunca inventes datos" y el schema de salida esperado para
+   ese skill.
+4. `isOriginAllowed()`: localhost/127.0.0.1 permitidos por defecto sin
+   `ALLOWED_ORIGIN`; con `ALLOWED_ORIGIN` configurado, solo ese origen
+   exacto — cualquier otro, rechazado.
+5. `callGemini()`: URL con el modelo correcto, API key enviada por header
+   (nunca en la URL/query string), respuesta exitosa parseada
+   correctamente, `source`/`generatedAt` fijados por el servidor.
+6. `callGemini()`: HTTP no exitoso de Gemini, fallo de red, timeout (con
+   verificación de que realmente aborta, no solo que "eventualmente
+   funciona"), texto no-JSON, y `skill` no coincidente — los 5 modos de
+   fallo, cada uno con un mensaje de error claro, ninguno crashea el
+   proceso.
+7. Servidor real (HTTP genuino en un puerto efímero): responde `500` sin
+   `GEMINI_API_KEY` (y nunca intenta llamar a Gemini); `OPTIONS` responde
+   `204` con las cabeceras CORS correctas para un origen localhost; ruta o
+   método incorrecto responde `404`; cuerpo JSON inválido o `skill`
+   desconocido responden `400`; la ruta feliz responde `200` con el cuerpo
+   normalizado; un fallo simulado de Gemini responde `502` sin crashear.
+8. **END-TO-END genuino**: `RemoteResponseProvider` (cargado en un sandbox
+   de `vm`, con el `fetch` REAL de Node inyectado) habla por HTTP real
+   contra una instancia real de este proxy (puerto efímero), que a su vez
+   usa un `fetchImpl` simulado para "Gemini" — sin ninguna llamada real a
+   Google, se prueba el cableado completo de punta a punta: Context Builder
+   → PromptContextBuilder → RemoteResponseProvider → HTTP real →
+   gemini-proxy-server → "Gemini" simulado → HTTP real de vuelta →
+   RemoteResponseProvider devuelve `source:'gemini'` con el contenido
+   exacto que "el modelo" produjo.
+
+Resultado: **17/17 checks OK** en `verify-gemini-proxy-server.js`,
+**15/15** en `verify-remote-response-provider.js` (con el nuevo check de
+timeout). Se volvieron a correr las 9 suites restantes en el mismo
+momento — `scripts/verify-context-builder.js` (**10/10**),
+`scripts/verify-commercial-data.js` (**8/8**),
+`scripts/verify-response-provider.js` (**9/9**),
+`scripts/verify-compare-products.js` (**10/10**),
+`scripts/verify-best-alternative.js` (**10/10**),
+`scripts/verify-cross-sell.js` (**10/10**),
+`scripts/verify-price-availability.js` (**12/12**),
+`scripts/verify-ai-provider-abstraction.js` (**10/10**) y
+`scripts/verify-prompt-context-builder.js` (**17/17**) — cero regresión
+sobre las Fases 2, 3 y 4 · Pasos 1-3.
+
+Verificación adicional fuera de Node/QA: el servidor se arrancó como
+proceso independiente real (`node server/gemini-proxy-server.js`, sin
+`GEMINI_API_KEY`) y se le hicieron peticiones HTTP reales con `curl` —
+`POST /copilot` respondió `500` con la advertencia esperada, y
+`OPTIONS /copilot` con `Origin: http://localhost:5500` respondió `204` con
+las cabeceras CORS correctas. Verificación en navegador (perfil demo): sin
+errores de consola; `ResponseProvider.get() === LocalResponseProvider` tras
+la carga (el flag sigue sin definirse en ninguna página); "Venta cruzada
+inteligente" etiquetada `local` en el panel, generando recomendaciones
+reales exactamente igual que antes de este paso — el servidor nuevo existe
+en el repositorio pero no altera en absoluto el comportamiento del perfil
+demo ni del de producción, ninguno de los cuales lo invoca hoy.

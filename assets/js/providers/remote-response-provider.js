@@ -1,4 +1,4 @@
-/* Bismillah Product Intelligence Platform — Remote Response Provider (Fase 4, Paso 3)
+/* Bismillah Product Intelligence Platform — Remote Response Provider (Fase 4, Pasos 3-4)
  *
  * Primer consumidor real de PromptContextBuilder: cumple exactamente el
  * mismo ResponseProviderContract que LocalResponseProvider y AIResponseProvider
@@ -22,7 +22,8 @@
  *   - flag deshabilitado,
  *   - sin `REMOTE_PROVIDER_CONFIG.endpoint` configurado,
  *   - `fetch` no disponible en el entorno,
- *   - la llamada de red falla o la respuesta HTTP no es exitosa,
+ *   - la llamada de red falla, se agota el tiempo de espera, o la respuesta
+ *     HTTP no es exitosa,
  *   - la respuesta remota no es JSON válido o no trae el `skill` esperado,
  *   - incluso un `context` inválido que haría fallar la propia construcción
  *     del PromptContext.
@@ -31,6 +32,19 @@
  * Promise sin resolver ni propaga un error de red hacia el panel del
  * Copilot. Es la misma garantía de "nunca romper la UI" que ya sostienen
  * las cinco habilidades de Local, extendida a un canal que sí puede fallar.
+ *
+ * Fase 4, Paso 4: se agrega manejo de TIMEOUT (`AbortController`,
+ * configurable vía `REMOTE_PROVIDER_CONFIG.timeoutMs`, con
+ * DEFAULT_TIMEOUT_MS de respaldo) — el único cambio de este archivo en ese
+ * paso. Este módulo sigue sin saber nada de qué backend hay detrás del
+ * endpoint (Gemini, OpenAI, Claude, o cualquier otro): timeout es una
+ * preocupación de transporte HTTP genérica, no específica de un proveedor
+ * de IA — mantenerla aquí (y no en ningún adaptador de proveedor
+ * específico) es precisamente lo que preserva el agnosticismo exigido por
+ * la especificación de ese paso. La integración real con la API de Gemini
+ * vive enteramente en server/gemini-proxy-server.js — un componente nuevo,
+ * server-side, que este archivo ni siquiera conoce: solo sabe que existe
+ * "un endpoint HTTP que responde con la forma del contrato".
  *
  * Por qué usa PromptContextBuilder sin modificar su API: cada método
  * llama a `PromptContextBuilder.build(context, { intent: { skill: '...' } })`
@@ -43,6 +57,7 @@
 
 const RemoteResponseProvider = (function () {
   const FLAG_NAME = 'remoteResponseProvider';
+  const DEFAULT_TIMEOUT_MS = 8000;
 
   function getConfig() {
     return (typeof REMOTE_PROVIDER_CONFIG !== 'undefined' && REMOTE_PROVIDER_CONFIG) || null;
@@ -50,6 +65,12 @@ const RemoteResponseProvider = (function () {
 
   function getFetch() {
     return typeof fetch !== 'undefined' ? fetch : null;
+  }
+
+  function getTimeoutMs(config) {
+    return (config && Number.isFinite(config.timeoutMs) && config.timeoutMs > 0)
+      ? config.timeoutMs
+      : DEFAULT_TIMEOUT_MS;
   }
 
   async function callRemote(skill, promptContext) {
@@ -64,11 +85,28 @@ const RemoteResponseProvider = (function () {
     if (!fetchFn) {
       throw new Error('RemoteResponseProvider: fetch no está disponible en este entorno.');
     }
-    const httpResponse = await fetchFn(config.endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ skill, promptContext }),
-    });
+
+    const timeoutMs = getTimeoutMs(config);
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+    let httpResponse;
+    try {
+      httpResponse = await fetchFn(config.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ skill, promptContext }),
+        ...(controller ? { signal: controller.signal } : {}),
+      });
+    } catch (err) {
+      if (controller && controller.signal.aborted) {
+        throw new Error(`RemoteResponseProvider: tiempo de espera agotado (${timeoutMs}ms) esperando al proveedor remoto.`);
+      }
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+
     if (!httpResponse || !httpResponse.ok) {
       throw new Error(`RemoteResponseProvider: respuesta HTTP no exitosa (${httpResponse ? httpResponse.status : 'sin respuesta'}).`);
     }
