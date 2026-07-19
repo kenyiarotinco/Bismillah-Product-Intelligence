@@ -80,6 +80,11 @@ function main() {
     if (!sku) { skusSinCode++; continue; }
     bySku[sku] = {
       precio: typeof p.finalPrice === 'number' ? p.finalPrice : null,
+      // Precio de lista REAL, cuando la fuente lo trae — se prioriza sobre
+      // cualquier cálculo derivado (ver local-response-provider.js). Puede
+      // venir null si la fuente no lo tiene para esta fila; en ese caso el
+      // consumidor cae de vuelta al cálculo precio + priceDifference.
+      precioLista: typeof p.listPrice === 'number' ? p.listPrice : null,
       stock: typeof p.stockTotal === 'number' ? p.stockTotal : null,
       estado: p.stockStatus || null,
       priceDifference: typeof p.marginGap === 'number' ? p.marginGap : null,

@@ -10,14 +10,18 @@ Usuario → AI Sales Copilot (panel, app.js) → Context Builder → Response Pr
 ```
 
 - **Context Builder** (Paso 2): construye el contexto de un producto.
-- **Response Provider** (Pasos 3-6): a partir de uno o más contextos, genera
-  la respuesta de una habilidad concreta del Copilot — hoy, "Explicar
-  producto" (Paso 3), "Comparar productos" (Paso 4), "Mejor alternativa"
-  (Paso 5) y "Venta cruzada inteligente" (Paso 6).
+- **Response Provider** (Fase 2, Pasos 3-6; Fase 3, Paso 2): a partir de uno
+  o más contextos, genera la respuesta de una habilidad concreta del
+  Copilot — "Explicar producto" (Paso 3), "Comparar productos" (Paso 4),
+  "Mejor alternativa" (Paso 5), "Venta cruzada inteligente" (Paso 6) y
+  "Precio y disponibilidad" (Fase 3, Paso 2) — las 5 habilidades
+  planificadas del Copilot, completas.
 - **Commercial Data Provider** (Fase 3, Paso 1): adaptador que Context
   Builder consulta por SKU para completar el bloque `comercial` con datos
   reales (precio, stock, estado) cuando existen — ver la sección dedicada
-  más abajo.
+  más abajo. Es la única vía por la que un dato comercial entra al
+  sistema; "Precio y disponibilidad" (Paso 2) nunca lo consulta
+  directamente, solo lee el bloque ya completado en `context.comercial`.
 
 ## Context Builder (Fase 2, Paso 2)
 
@@ -191,7 +195,7 @@ Verificación adicional en navegador: `index.html` con el nuevo
 `ContextBuilder` disponible en consola, Producto 360 y el panel AI Sales
 Copilot se renderizan igual que antes de este paso, sin errores de consola.
 
-## Response Provider (Fase 2, Pasos 3-6)
+## Response Provider (Fase 2, Pasos 3-6; Fase 3, Paso 2)
 
 ### Responsabilidad
 
@@ -259,7 +263,7 @@ modificar Producto 360".
 
 ```js
 // response-provider.js — el puerto
-ResponseProvider.use(provider)   // registra el proveedor activo; valida que implemente las 4 habilidades del contrato
+ResponseProvider.use(provider)   // registra el proveedor activo; valida que implemente las 5 habilidades del contrato
 ResponseProvider.get()           // devuelve el proveedor activo; lanza si no hay ninguno
 ResponseProvider.isReady()       // true/false
 
@@ -299,6 +303,19 @@ provider.crossSell(context) => Promise<{
   generatedAt: string,
   recomendaciones: Array<{ sku: string, nombre: string, razon: string }>,
   mensaje: string | null,   // presente solo si recomendaciones está vacío
+}>
+
+provider.priceAndAvailability(context) => Promise<{
+  skill: 'price-availability',
+  source: string,
+  generatedAt: string,
+  disponible: boolean,
+  precio: number | null,           // precio final — de context.comercial.precio
+  precioLista: number | null,      // derivado: precio + priceDifference
+  priceDifference: number | null,  // de context.comercial.priceDifference (NO es margen)
+  stock: number | null,
+  estado: string | null,
+  mensaje: string | null,          // presente solo si disponible === false
 }>
 ```
 
@@ -1113,3 +1130,208 @@ QA de pasos anteriores—, así que `loadCatalogSkus()` intentaba leer
 con una segunda evaluación dentro del mismo contexto, el mismo patrón que
 ya usan los scripts `verify-*.js`. No fue necesario ningún cambio de
 arquitectura para resolverlo.
+
+## Precio y disponibilidad (Fase 3, Paso 2)
+
+### La quinta habilidad, y la primera que consume datos comerciales
+
+Con esta habilidad quedan implementadas las 5 habilidades planificadas del
+AI Sales Copilot (Paso 1 de la Fase 2). Es la primera que muestra
+`context.comercial` al usuario — las cuatro anteriores solo lo consultaban
+de forma indirecta y defensiva (`explainProduct` menciona honestamente
+cuando *no* hay dato disponible; ninguna otra lo toca).
+
+### Nunca toca CommercialDataProvider — solo lee `context.comercial`
+
+La especificación de este paso pide "utilizar únicamente
+CommercialDataProvider" y "nunca acceder directamente a
+`COMMERCIAL_DATA`". Ambas reglas se cumplen, pero no porque
+`priceAndAvailability()` llame a `CommercialDataProvider.getBySku()` — no
+lo hace, y no necesita hacerlo. `ContextBuilder.build()` ya consultó a
+`CommercialDataProvider` (Fase 3, Paso 1) y dejó el resultado, ya
+normalizado, en `context.comercial`. `priceAndAvailability()` es un
+consumidor más de ese contrato — el mismo que ya usan `explainProduct`,
+`bestAlternative`, etc. para `producto`/`relaciones` — y nunca se entera de
+que `CommercialDataProvider` existe.
+
+```js
+function priceAndAvailability(context) {
+  ...
+  const { producto, comercial } = context;
+  // nunca: CommercialDataProvider.getBySku(...)
+  // nunca: COMMERCIAL_DATA[...]
+}
+```
+
+Esto es, en la práctica, más estricto que "usar CommercialDataProvider":
+como `CommercialDataProvider` es la ÚNICA vía por la que un dato comercial
+entra al sistema (Fase 3, Paso 1), y esta habilidad solo lee lo que esa vía
+ya produjo, es imposible que el precio/stock/estado mostrado provenga de
+otro lugar. Verificado explícitamente en QA (`scripts/verify-price-availability.js`,
+check 2): el código fuente de `local-response-provider.js` no contiene
+ninguna referencia textual a `CommercialDataProvider` ni a
+`COMMERCIAL_DATA`.
+
+### El "precio de lista": real cuando existe, derivado solo como respaldo
+
+La primera versión de este paso solo calculaba `precioLista` (`precio +
+priceDifference`), porque `import-commercial-data.js` no capturaba el
+precio de lista real de la fuente externa — aunque esa fuente sí lo
+provee (`listPrice` en `data/products.js` del pipeline comercial, ya
+usado por `build_data.py` para calcular `marginGap`, pero nunca
+propagado tal cual hacia este proyecto). Observación de revisión de
+código: priorizar el valor real cuando el dataset lo trae, y usar el
+cálculo derivado únicamente como respaldo. Se ajustaron tres archivos,
+todos de forma aditiva:
+
+- **`scripts/import-commercial-data.js`** — ahora también captura
+  `p.listPrice` (cuando es un número) en un nuevo campo
+  `bySku[sku].precioLista`, junto al ya existente `priceDifference`. No
+  se tocó el pipeline externo (`listPrice` ya estaba en su salida, este
+  script simplemente empezó a leerlo).
+- **`context-builder.js`** — `buildComercial()` hace *relay* de
+  `registro.precioLista` hacia `comercial.precioLista`, sin derivar nada
+  — sigue siendo una función de datos pura, no de presentación. Si el
+  registro no trae `precioLista` (dato más antiguo, o proveedor de
+  prueba), el campo queda en `null` como cualquier otro campo ausente.
+- **`local-response-provider.js`** — `buildPriceAndAvailability()` es
+  quien decide la prioridad:
+
+  ```js
+  const precioLista = typeof comercial.precioLista === 'number'
+    ? comercial.precioLista                                    // 1) real, si está
+    : (typeof comercial.precio === 'number' && typeof comercial.priceDifference === 'number')
+      ? Math.round((comercial.precio + comercial.priceDifference) * 100) / 100  // 2) respaldo derivado
+      : null;                                                  // 3) ninguno de los dos
+  ```
+
+  Esta decisión de prioridad es lógica de presentación — vive en la
+  habilidad, no en Context Builder, igual que toda la demás lógica de
+  negocio de las 5 habilidades.
+
+Verificado con datos reales (no solo fixtures): tras regenerar
+`production/commercial-data.js` con el script corregido, **1.114/1.114**
+registros comerciales reales trajeron un `precioLista` real, y en el
+100 % de los casos coincide con lo que habría dado el cálculo derivado
+(diferencia < 0.01) — confirmando que ambos caminos son consistentes, y
+que ahora se usa el más directo. QA agrega dos checks dedicados: uno
+prueba que un `precioLista` real gana sobre un derivado distinto cuando
+ambos existen: otro prueba que, sin `precioLista` real, el cálculo de
+respaldo se sigue usando exactamente igual que antes de este ajuste.
+
+### Los 3 casos de la especificación, uno a uno
+
+- **Caso 1 (producto con datos comerciales):** `comercial.disponible ===
+  true` → se muestran precio final, precio de lista (si se pudo derivar),
+  diferencia de precio, stock y estado — los 5 campos que pide la
+  especificación.
+- **Caso 2 (producto sin datos comerciales):** `comercial.disponible ===
+  false` → `disponible:false` y un `mensaje` honesto
+  (`No hay información comercial disponible para "<nombre>" en este
+  momento.`), sin ningún campo numérico poblado.
+- **Caso 3 (perfil Demo):** el perfil demo público nunca carga
+  `production/commercial-data.js`, así que `CommercialDataProvider.isAvailable()`
+  es siempre `false` y `context.comercial.disponible` es siempre `false`
+  para cualquier producto — el Caso 3 es, en la práctica, el Caso 2 aplicado
+  universalmente a todo el catálogo demo. No hizo falta ninguna rama de
+  código "si es el perfil demo" — es la misma lógica del Caso 2,
+  ejecutándose sobre datos que genuinamente no existen ahí.
+
+### UI: cero CSS nuevo
+
+El bloque de respuesta reutiliza `.copilot-response`/`.copilot-response-h`/
+`.dot-live` (ya usados por las 4 habilidades anteriores), `.compare-none`
+(ya usado por "Mejor alternativa"/"Venta cruzada" para sus mensajes
+"no encontrado") y `.compare-prod-row` (ya usado por "Comparar productos"
+para sus filas etiqueta/valor). No se agregó ninguna clase CSS nueva para
+esta habilidad — el layout "Precio final / Precio lista / Diferencia /
+Stock / Estado" es, visualmente, el mismo patrón de filas que ya existía.
+Los montos usan el formateador `es-PE` con 2 decimales y el prefijo "S/"
+(soles peruanos, consistente con el dominio descrito en
+`docs/PROJECT_BRIEF.md`).
+
+### Orquestación: sin `maxPerType` especial
+
+A diferencia de "Comparar productos"/"Mejor alternativa"/"Venta cruzada",
+`onPriceAvailabilityClick()` llama a `ContextBuilder.build(p360Current)`
+sin pasar `maxPerType` — el bloque `comercial` no depende de
+`relaciones.detalle` en absoluto, así que no hay riesgo de truncamiento
+que evitar. Es el `ContextBuilder.build()` más simple de los cinco.
+
+### Fuera de alcance (deliberado, en este paso)
+
+- No se modificó `CommercialDataProvider` ni el pipeline externo
+  (`build_data.py`/`build_bundle.py`) — cero cambios en ninguno de los
+  dos. `import-commercial-data.js` sí recibió un ajuste mínimo y aditivo
+  post-aprobación (capturar `listPrice` ya existente en la fuente,
+  detallado arriba) — no está exento de cambios como se planteó
+  originalmente, pero el pipeline externo y `CommercialDataProvider` sí.
+- No se modificó ninguna de las cuatro habilidades anteriores.
+- Sin proveedor Gemini ni ningún código de red.
+
+### QA — Precio y disponibilidad
+
+`scripts/verify-price-availability.js` — mismo enfoque headless que los
+pasos anteriores: carga `data.js` + `context-builder.js` +
+`response-provider.js` + `providers/local-response-provider.js` en un
+sandbox de Node, sin DOM ni red, y verifica:
+
+1. Guardrail estático sobre código ejecutable (no comentarios) de
+   `response-provider.js` y `local-response-provider.js`: cero referencias
+   a `fetch`, `XMLHttpRequest`, `document`, `window`, `gemini`, `openai`,
+   `anthropic`.
+2. `local-response-provider.js` no contiene, en absoluto, las cadenas
+   `CommercialDataProvider` ni `COMMERCIAL_DATA` — la regla "nunca acceder
+   directamente" verificada por inspección del código fuente, no solo por
+   comportamiento observado.
+3. `ResponseProvider.use()` ahora exige **también** `priceAndAvailability`
+   — un proveedor sin ese método es rechazado.
+4. **Caso 1**: producto con dato comercial simulado → precio final, precio
+   de lista, diferencia, stock y estado, todos presentes.
+5. **precioLista real** tiene prioridad sobre el cálculo derivado cuando el
+   registro trae ambos y difieren entre sí — verificado explícitamente,
+   no solo por inspección.
+6. **precioLista** cae al cálculo derivado (respaldo) exactamente igual
+   que antes de este ajuste cuando el dataset no trae un valor real.
+7. **Caso 2**: producto sin dato comercial → `disponible:false`, todos los
+   campos numéricos/estado en `null`, mensaje honesto sin un precio con
+   formato de moneda inventado.
+8. **Caso 3**: sin `CommercialDataProvider` cargado en el sandbox en
+   absoluto (la situación real del perfil demo) → siempre
+   `disponible:false`, nunca lanza.
+9. `precioLista` queda en `null`, no en un número incompleto, cuando no
+   hay valor real ni forma de derivarlo (falta `priceDifference`).
+10. Un contexto inválido (`null`) rechaza la Promise en vez de lanzar de
+    forma síncrona.
+11. `explainProduct`, `compareProducts`, `bestAlternative` y `crossSell`
+    siguen funcionando exactamente igual tras ampliar el contrato con
+    `priceAndAvailability`.
+12. Recorre **los 1.094 productos del catálogo**, con un proveedor
+    comercial simulado que cubre una parte de ellos, sin lanzar ninguna
+    excepción.
+
+Resultado: **12/12 checks OK**. `scripts/verify-commercial-data.js` ganó
+un check dedicado (`precioLista` se relaya tal cual desde
+`ContextBuilder.build()` cuando el proveedor lo trae) y actualizó su
+aserción de shape exacto para incluir el nuevo campo — resultado
+**8/8**. Se volvieron a correr `scripts/verify-context-builder.js`
+(**10/10**), `scripts/verify-response-provider.js` (**9/9**),
+`scripts/verify-compare-products.js` (**10/10**),
+`scripts/verify-best-alternative.js` (**10/10**) y
+`scripts/verify-cross-sell.js` (**10/10**) en el mismo momento — cero
+regresión sobre los pasos anteriores de las Fases 2 y 3.
+
+Verificación con datos reales (no solo fixtures): se regeneró
+`production/commercial-data.js` con el script corregido —
+**1.114/1.114** registros comerciales reales trajeron un `precioLista`
+real, consistente en el 100 % de los casos con el cálculo derivado.
+Verificación adicional en navegador: perfil demo público (clic en
+"Precio y disponibilidad" → mensaje honesto de "no disponible",
+consistente con el Caso 3) y perfil de producción con
+`production/commercial-data.js` real regenerado (precio final, precio de
+lista real, diferencia, stock y estado mostrados correctamente, con
+formato de moneda "S/" y separador de miles `es-PE`). Las 5 habilidades
+del Copilot verificadas coexistiendo sin interferencia de estado, en
+ambos perfiles. Cambiar de producto reinicia las 5. Responsive (375 px)
+verificado con la respuesta completa visible. Sin errores de consola en
+ningún caso.

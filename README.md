@@ -25,7 +25,7 @@ Generado como primer MVP público con el **DULCE Engineering System**.
 |---|---|
 | **Panorama** | Salud del grafo: KPIs, distribución por tipo, confianza por tipo, mezcla Bienestar/Farma, hubs de conectividad, registro de riesgos. |
 | **Explorador** | Búsqueda por nombre/SKU/tags, filtros por universo, familia, audiencia y tipo de relación. |
-| **Producto 360** | Ficha con órbita de relaciones (grafo ego interactivo en canvas), relaciones agrupadas por tipo con justificación y confianza. Incluye el panel lateral **AI Sales Copilot**: diseño del panel (Fase 2, Paso 1), Context Builder (Fase 2, Paso 2) y cuatro habilidades funcionales servidas por un Local Response Provider sin IA ni red — **Explicar producto** (Paso 3), **Comparar productos** (Paso 4), **Mejor alternativa** (Paso 5) y **Venta cruzada inteligente** (Paso 6). |
+| **Producto 360** | Ficha con órbita de relaciones (grafo ego interactivo en canvas), relaciones agrupadas por tipo con justificación y confianza. Incluye el panel lateral **AI Sales Copilot**, con sus 5 habilidades planificadas ya implementadas por un Local Response Provider sin IA ni red — **Explicar producto**, **Comparar productos**, **Mejor alternativa**, **Venta cruzada inteligente** (Fase 2) y **Precio y disponibilidad** (Fase 3, servida por datos comerciales reales opcionales — ver "Datos comerciales" abajo). |
 | **Motores** | Simulador de recomendación: venta cruzada, sustitución y variantes, con scoring transparente y exclusión de confianza Baja por defecto. |
 
 Los cuatro módulos, todos los KPIs, gráficos, filtros y motores de recomendación funcionan **de forma idéntica** en ambos perfiles de despliegue descritos abajo — la única diferencia entre ellos es de dónde vienen los nombres de producto.
@@ -78,10 +78,10 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin backend ni bui
 │   └── js/
 │       ├── app.js                 # Lógica de la aplicación (vistas, búsqueda, motores, canvas, orquestación del Copilot)
 │       ├── context-builder.js     # Construye el contexto de producto para el AI Sales Copilot (sin IA, sin red)
-│       ├── response-provider.js   # Puerto: registro del proveedor de respuestas activo del Copilot (explainProduct + compareProducts + bestAlternative + crossSell)
+│       ├── response-provider.js   # Puerto: registro del proveedor de respuestas activo del Copilot (5 habilidades)
 │       ├── commercial-data-provider.js  # Adaptador: Context Builder pide datos comerciales por SKU, sin conocer su fuente (Fase 3)
 │       ├── providers/
-│       │   └── local-response-provider.js  # Proveedor local (sin IA, sin red) — las 4 habilidades funcionales del Copilot
+│       │   └── local-response-provider.js  # Proveedor local (sin IA, sin red) — las 5 habilidades del Copilot
 │       └── data.js                # Dataset SINTÉTICO — es el dato por defecto del repo, versionado
 ├── production/                    # Perfil real — IGNORADO POR GIT (no existe en el repo clonado)
 │   ├── index.html
@@ -99,7 +99,8 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin backend ni bui
 │   ├── verify-response-provider.js  # QA headless (Node) de "Explicar producto"
 │   ├── verify-compare-products.js   # QA headless (Node) de "Comparar productos"
 │   ├── verify-best-alternative.js   # QA headless (Node) de "Mejor alternativa"
-│   └── verify-cross-sell.js         # QA headless (Node) de "Venta cruzada inteligente"
+│   ├── verify-cross-sell.js         # QA headless (Node) de "Venta cruzada inteligente"
+│   └── verify-price-availability.js # QA headless (Node) de "Precio y disponibilidad"
 └── docs/
     ├── PROJECT_BRIEF.md           # Objetivo, dominio, alcance y supuestos del MVP; estado de las Fases 2 y 3
     ├── ARCHITECTURE.md            # Arquitectura del AI Sales Copilot y de los datos comerciales (Fases 2-3)

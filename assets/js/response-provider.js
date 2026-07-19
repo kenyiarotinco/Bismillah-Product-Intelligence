@@ -1,4 +1,4 @@
-/* Bismillah Product Intelligence Platform — Response Provider (Fase 2, Pasos 3-6)
+/* Bismillah Product Intelligence Platform — Response Provider (Fase 2, Pasos 3-6; Fase 3, Paso 2)
  *
  * Puerto/contrato que desacopla al AI Sales Copilot de CÓMO se generan sus
  * respuestas. Cualquier proveedor —el local de hoy, o más adelante Google
@@ -49,6 +49,23 @@
  *     mensaje: string | null,   // presente solo si recomendaciones está vacío
  *   }>
  *
+ *   priceAndAvailability(context) => Promise<{
+ *     skill: 'price-availability',
+ *     source: string,
+ *     generatedAt: string,
+ *     disponible: boolean,
+ *     precio: number | null,           // precio final — viene de context.comercial.precio
+ *     precioLista: number | null,      // derivado: precio + priceDifference, cuando ambos existen
+ *     priceDifference: number | null,  // viene de context.comercial.priceDifference (NO es margen)
+ *     stock: number | null,
+ *     estado: string | null,
+ *     mensaje: string | null,          // presente solo si disponible === false
+ *   }>
+ *   // Esta habilidad NUNCA llama a CommercialDataProvider ni lee
+ *   // COMMERCIAL_DATA por su cuenta — solo lee el bloque `comercial` que
+ *   // Context Builder ya construyó (Fase 3, Paso 1). Ese bloque es, en sí
+ *   // mismo, la única vía por la que un dato comercial entra al sistema.
+ *
  * `context`/`contextA`/`contextB` son exactamente los objetos que devuelve
  * ContextBuilder.build() — ningún proveedor recibe ni el DOM, ni el índice
  * del producto, ni nada de app.js.
@@ -60,15 +77,13 @@
  * una línea del código que lo invoca — solo cambia cuánto tarda en
  * resolverse la misma Promise que ya se estaba esperando.
  *
- * Última habilidad pendiente (Precio y disponibilidad) se añadirá a este
- * mismo contrato como un nuevo método cuando se apruebe su propio paso — no
- * antes, para no comprometerse hoy con una forma que todavía no se ha
- * diseñado.
+ * Con `priceAndAvailability` quedan las 5 habilidades planificadas del
+ * Copilot implementadas en el contrato.
  */
 'use strict';
 
 const ResponseProvider = (function () {
-  const REQUIRED_METHODS = ['explainProduct', 'compareProducts', 'bestAlternative', 'crossSell'];
+  const REQUIRED_METHODS = ['explainProduct', 'compareProducts', 'bestAlternative', 'crossSell', 'priceAndAvailability'];
   let active = null;
 
   function assertShape(provider) {

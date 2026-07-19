@@ -25,6 +25,10 @@
  *   meta.skusSinCode        — rows skipped for missing a SKU/code
  *   meta.coverage           — { totalCatalogo, conDatoComercial } if production/data.js was present
  *   bySku[sku].precio           — final sale price
+ *   bySku[sku].precioLista       — REAL list price, when the source provides it for that
+ *                                  row (may be null — the consumer falls back to
+ *                                  precio + priceDifference when it's missing, see
+ *                                  providers/local-response-provider.js).
  *   bySku[sku].stock             — total stock units
  *   bySku[sku].estado            — stock status label (e.g. "Stock medio")
  *   bySku[sku].priceDifference   — list price minus final price. NOT a profit
@@ -35,4 +39,4 @@
  * /production/ folder is git-ignored — see .gitignore and README.md,
  * "Perfiles de despliegue").
  */
-window.COMMERCIAL_DATA={"meta":{"generatedAt":"2026-01-01T00:00:00.000Z","sourceRowCount":1,"skusSinCode":0,"coverage":{"totalCatalogo":2,"conDatoComercial":1}},"bySku":{"10001":{"precio":35.0,"stock":12,"estado":"Stock medio","priceDifference":0}}};
+window.COMMERCIAL_DATA={"meta":{"generatedAt":"2026-01-01T00:00:00.000Z","sourceRowCount":1,"skusSinCode":0,"coverage":{"totalCatalogo":2,"conDatoComercial":1}},"bySku":{"10001":{"precio":35.0,"precioLista":35.0,"stock":12,"estado":"Stock medio","priceDifference":0}}};

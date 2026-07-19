@@ -321,7 +321,7 @@ const p360Expanded = new Set();
 const COPILOT_SKILLS = [
   { key: 'explain-product', icon: '🤖', title: 'Explicar producto', desc: 'Explica beneficios, usos y público objetivo.', bg: 'var(--emerald-tint)', fg: 'var(--emerald-dk)' },
   { key: 'compare-products', icon: '⚖️', title: 'Comparar productos', desc: 'Compara dos productos comercialmente.', bg: 'var(--indigo-tint)', fg: 'var(--indigo)' },
-  { key: null, icon: '💰', title: 'Precio y disponibilidad', desc: 'Consulta precio, stock y estado.', bg: 'var(--amber-tint)', fg: '#8A5A14' },
+  { key: 'price-availability', icon: '💰', title: 'Precio y disponibilidad', desc: 'Consulta precio, stock y estado.', bg: 'var(--amber-tint)', fg: '#8A5A14' },
   { key: 'best-alternative', icon: '💲', title: 'Mejor alternativa', desc: 'Encuentra el mejor sustituto.', bg: 'rgba(122,95,191,.14)', fg: 'var(--t2)' },
   { key: 'cross-sell', icon: '🧠', title: 'Venta cruzada inteligente', desc: 'Sugiere productos complementarios y explica por qué recomendarlos.', bg: 'rgba(194,85,127,.14)', fg: 'var(--t5)' },
 ];
@@ -365,23 +365,32 @@ let copilotBestAlt = { status: 'idle', response: null, error: null };
 // mismo patrón de disparo automático que copilotBestAlt.
 let copilotCrossSell = { status: 'idle', response: null, error: null };
 
+// Estado de "Precio y disponibilidad" (Fase 3, Paso 2). Misma forma y mismo
+// patrón de disparo automático que copilotBestAlt/copilotCrossSell. No
+// necesita relaciones.detalle, así que su ContextBuilder.build() no usa
+// COMPARE_MAX_PER_TYPE — el bloque `comercial` no depende de maxPerType.
+let copilotPriceAvail = { status: 'idle', response: null, error: null };
+
 function copilotSkillRowHTML(skill, idx) {
   const isExplain = skill.key === 'explain-product';
   const isCompare = skill.key === 'compare-products';
   const isBestAlt = skill.key === 'best-alternative';
   const isCrossSell = skill.key === 'cross-sell';
+  const isPriceAvail = skill.key === 'price-availability';
 
   const status = isExplain ? copilotExplain.status
     : isCompare ? copilotCompare.status
     : isBestAlt ? copilotBestAlt.status
     : isCrossSell ? copilotCrossSell.status
+    : isPriceAvail ? copilotPriceAvail.status
     : 'idle';
   const isOpen = (isExplain && (status === 'done' || status === 'error'))
     || (isCompare && status !== 'idle')
     || (isBestAlt && (status === 'done' || status === 'error'))
-    || (isCrossSell && (status === 'done' || status === 'error'));
+    || (isCrossSell && (status === 'done' || status === 'error'))
+    || (isPriceAvail && (status === 'done' || status === 'error'));
 
-  const anyKnownSkill = isExplain || isCompare || isBestAlt || isCrossSell;
+  const anyKnownSkill = isExplain || isCompare || isBestAlt || isCrossSell || isPriceAvail;
   const statusLabel = !anyKnownSkill ? 'Próximamente'
     : status === 'loading' ? 'Generando…'
     : status === 'error' ? 'No se pudo generar'
@@ -395,6 +404,7 @@ function copilotSkillRowHTML(skill, idx) {
       ${isCompare ? 'data-skill="compare-products"' : ''}
       ${isBestAlt ? 'data-skill="best-alternative"' : ''}
       ${isCrossSell ? 'data-skill="cross-sell"' : ''}
+      ${isPriceAvail ? 'data-skill="price-availability"' : ''}
       ${status === 'loading' ? 'aria-busy="true" disabled' : ''}>
       <span class="copilot-ic" style="background:${skill.bg};color:${skill.fg}">${skill.icon}<span class="copilot-ic-n">${idx + 1}</span></span>
       <span class="copilot-row-txt">
@@ -423,6 +433,8 @@ function copilotSkillRowHTML(skill, idx) {
     extraHTML = bestAlternativeExtraHTML();
   } else if (isCrossSell) {
     extraHTML = crossSellExtraHTML();
+  } else if (isPriceAvail) {
+    extraHTML = priceAvailabilityExtraHTML();
   } else if (isCompare) {
     extraHTML = copilotCompareExtraHTML();
   }
@@ -577,6 +589,47 @@ function crossSellExtraHTML() {
   return '';
 }
 
+function priceAvailabilityResponseHTML(res) {
+  const time = res.generatedAt
+    ? new Date(res.generatedAt).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' })
+    : '';
+  const header = `<div class="copilot-response-h"><span class="dot-live"></span>Precio y disponibilidad · ${esc(res.source || 'local')} · ${time}</div>`;
+  if (!res.disponible) {
+    return `
+      <div class="copilot-response">
+        ${header}
+        <p class="compare-none">${esc(res.mensaje)}</p>
+      </div>`;
+  }
+  const money = v => v == null ? '—' : `S/ ${v.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const rows = [
+    ['Precio final', money(res.precio)],
+    res.precioLista != null ? ['Precio lista', money(res.precioLista)] : null,
+    res.priceDifference != null ? ['Diferencia', money(res.priceDifference)] : null,
+    ['Stock', res.stock != null ? fmt(res.stock) : '—'],
+    ['Estado', res.estado || '—'],
+  ].filter(Boolean);
+  return `
+    <div class="copilot-response">
+      ${header}
+      ${rows.map(([label, value]) => `<div class="compare-prod-row"><span>${esc(label)}</span><span>${esc(value)}</span></div>`).join('')}
+    </div>`;
+}
+
+function priceAvailabilityExtraHTML() {
+  const st = copilotPriceAvail;
+  if (st.status === 'loading') {
+    return `<div class="copilot-response-loading"><span class="dot-live"></span>Consultando precio y disponibilidad…</div>`;
+  }
+  if (st.status === 'error') {
+    return `<div class="copilot-response-err">${esc(st.error)}</div>`;
+  }
+  if (st.status === 'done' && st.response) {
+    return priceAvailabilityResponseHTML(st.response);
+  }
+  return '';
+}
+
 function copilotPanelHTML() {
   return `
     <aside class="card copilot-panel">
@@ -607,6 +660,9 @@ function wireCopilotPanel() {
 
   const crossSellBtn = $('[data-skill="cross-sell"]');
   if (crossSellBtn) crossSellBtn.addEventListener('click', onCrossSellClick);
+
+  const priceAvailBtn = $('[data-skill="price-availability"]');
+  if (priceAvailBtn) priceAvailBtn.addEventListener('click', onPriceAvailabilityClick);
 
   const compareBtn = $('[data-skill="compare-products"]');
   if (compareBtn) compareBtn.addEventListener('click', onCompareProductsClick);
@@ -741,6 +797,39 @@ function onCrossSellClick() {
     });
 }
 
+function onPriceAvailabilityClick() {
+  if (copilotPriceAvail.status === 'loading' || p360Current < 0) return;
+
+  copilotPriceAvail = { status: 'loading', response: null, error: null };
+  refreshCopilotPanel();
+
+  // Sin maxPerType especial: el bloque `comercial` no depende de
+  // relaciones.detalle, así que el default de ContextBuilder es suficiente.
+  let context;
+  try {
+    context = ContextBuilder.build(p360Current);
+  } catch (err) {
+    copilotPriceAvail = { status: 'error', response: null, error: err.message };
+    refreshCopilotPanel();
+    return;
+  }
+  if (!context) {
+    copilotPriceAvail = { status: 'error', response: null, error: 'No se pudo construir el contexto de este producto.' };
+    refreshCopilotPanel();
+    return;
+  }
+
+  ResponseProvider.get().priceAndAvailability(context)
+    .then(res => {
+      copilotPriceAvail = { status: 'done', response: res, error: null };
+      refreshCopilotPanel();
+    })
+    .catch(err => {
+      copilotPriceAvail = { status: 'error', response: null, error: err.message || 'Ocurrió un error consultando precio y disponibilidad.' };
+      refreshCopilotPanel();
+    });
+}
+
 function onCompareProductsClick() {
   if (copilotCompare.status === 'loading' || p360Current < 0) return;
   copilotCompare = copilotCompare.status === 'picking'
@@ -809,6 +898,7 @@ function openProduct(i) {
   copilotCompare = { status: 'idle', query: '', results: [], productBIndex: null, response: null, error: null };
   copilotBestAlt = { status: 'idle', response: null, error: null };
   copilotCrossSell = { status: 'idle', response: null, error: null };
+  copilotPriceAvail = { status: 'idle', response: null, error: null };
   showView('p360');
   renderP360();
 }

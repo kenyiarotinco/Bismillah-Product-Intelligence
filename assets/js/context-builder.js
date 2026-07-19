@@ -95,6 +95,7 @@ const ContextBuilder = (function () {
       return {
         disponible: false,
         precio: null,
+        precioLista: null,
         stock: null,
         margen: null,
         estado: null,
@@ -105,6 +106,12 @@ const ContextBuilder = (function () {
     return {
       disponible: true,
       precio: registro.precio,
+      // Precio de lista REAL, si el proveedor lo trae (no todos los
+      // registros lo tienen) — un simple relay, sin derivar nada aquí. La
+      // decisión de "usar este valor real, o calcular uno de respaldo si
+      // falta" es lógica de presentación y vive en el consumidor (ver
+      // providers/local-response-provider.js), no en Context Builder.
+      precioLista: typeof registro.precioLista === 'number' ? registro.precioLista : null,
       stock: registro.stock,
       // Margen de utilidad real (venta - costo): sigue sin existir en
       // ninguna fuente disponible — nunca se rellena a partir de

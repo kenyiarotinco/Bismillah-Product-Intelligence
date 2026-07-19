@@ -32,6 +32,14 @@
  * MISMA_AUDIENCIA > MISMO_INGREDIENTE, ponderado por confianza, Baja
  * excluida por defecto) sobre las relaciones que ya trae el contexto del
  * producto actual, reutilizando labelFor() para las justificaciones.
+ *
+ * Fase 3, Paso 2: implementa también `priceAndAvailability(context)` — a
+ * diferencia de las cuatro habilidades anteriores, no lee `relaciones` en
+ * absoluto: solo lee `context.comercial`, el bloque que Context Builder ya
+ * completa consultando CommercialDataProvider (Fase 3, Paso 1). Esta
+ * habilidad nunca llama a CommercialDataProvider ni a COMMERCIAL_DATA por
+ * su cuenta — ContextBuilder.build() es la única puerta de entrada de ese
+ * dato al sistema.
  */
 'use strict';
 
@@ -293,6 +301,49 @@ const LocalResponseProvider = (function () {
     return { recomendaciones, mensaje: null };
   }
 
+  // ---------- priceAndAvailability: no reutiliza ningún helper de las
+  // habilidades anteriores porque no hay vocabulario ni extracción que
+  // compartir — solo lee context.comercial tal cual. ----------
+
+  function buildPriceAndAvailability(context) {
+    const { producto, comercial } = context;
+
+    if (!comercial.disponible) {
+      return {
+        disponible: false,
+        precio: null,
+        precioLista: null,
+        priceDifference: null,
+        stock: null,
+        estado: null,
+        mensaje: `No hay información comercial disponible para "${producto.nombre}" en este momento.`,
+      };
+    }
+
+    // precioLista: prioriza el valor REAL del dato comercial
+    // (comercial.precioLista) cuando el proveedor lo trae. Solo si no
+    // viene, se usa como respaldo el cálculo derivado: priceDifference ya
+    // es "precio de lista − precio final" (ver Fase 3, Paso 1), así que
+    // sumarlo al precio final reconstruye el precio de lista sin inventar
+    // ningún dato nuevo. Si falta todo lo necesario para uno u otro camino,
+    // queda en null en vez de forzar un número incompleto.
+    const precioLista = typeof comercial.precioLista === 'number'
+      ? comercial.precioLista
+      : (typeof comercial.precio === 'number' && typeof comercial.priceDifference === 'number')
+        ? Math.round((comercial.precio + comercial.priceDifference) * 100) / 100
+        : null;
+
+    return {
+      disponible: true,
+      precio: comercial.precio,
+      precioLista,
+      priceDifference: comercial.priceDifference,
+      stock: comercial.stock,
+      estado: comercial.estado,
+      mensaje: null,
+    };
+  }
+
   function buildText(context) {
     const { producto, relaciones, comercial } = context;
     const parrafos = [];
@@ -389,5 +440,17 @@ const LocalResponseProvider = (function () {
     });
   }
 
-  return { explainProduct, compareProducts, bestAlternative, crossSell };
+  function priceAndAvailability(context) {
+    if (!context || !context.producto || !context.comercial) {
+      return Promise.reject(new Error('LocalResponseProvider.priceAndAvailability: contexto inválido o incompleto.'));
+    }
+    return Promise.resolve({
+      skill: 'price-availability',
+      source: SOURCE,
+      generatedAt: new Date().toISOString(),
+      ...buildPriceAndAvailability(context),
+    });
+  }
+
+  return { explainProduct, compareProducts, bestAlternative, crossSell, priceAndAvailability };
 })();

@@ -69,9 +69,10 @@ async function main() {
     const shape = JSON.parse(run("JSON.stringify(ContextBuilder.build(0).comercial)"));
     assert(shape.disponible === false, 'disponible debería seguir siendo false');
     assert(shape.precio === null && shape.stock === null && shape.margen === null && shape.estado === null, 'todos los campos originales deberían seguir en null');
-    assert(shape.priceDifference === null, 'el nuevo campo priceDifference también debería ser null cuando no hay dato');
+    assert(shape.priceDifference === null, 'el campo priceDifference también debería ser null cuando no hay dato');
+    assert(shape.precioLista === null, 'el campo precioLista (relay del dato real, Fase 3 Paso 2) también debería ser null cuando no hay dato');
     assert(shape.pendienteDe === 'Fase 1 — Integración de Datos', 'pendienteDe debería mantener exactamente el texto original');
-    assert(Object.keys(shape).sort().join(',') === 'disponible,estado,margen,pendienteDe,precio,priceDifference,stock', 'el shape debería ser exactamente el original + priceDifference, sin más cambios');
+    assert(Object.keys(shape).sort().join(',') === 'disponible,estado,margen,pendienteDe,precio,precioLista,priceDifference,stock', 'el shape debería ser exactamente el original + priceDifference + precioLista, sin más cambios');
   });
 
   await check('inyectando un commercialProvider de prueba CON registro: comercial se completa correctamente', () => {
@@ -85,8 +86,20 @@ async function main() {
     assert(info.disponible === true, 'disponible debería ser true cuando el proveedor tiene el SKU');
     assert(info.precio === 99.9 && info.stock === 12 && info.estado === 'Stock medio', 'precio/stock/estado deberían venir del registro del proveedor');
     assert(info.priceDifference === 3.5, 'priceDifference debería venir del registro del proveedor');
+    assert(info.precioLista === null, 'precioLista debería quedar null si el registro del proveedor no lo trae (compatibilidad hacia atrás)');
     assert(info.margen === null, 'margen NUNCA debería poblarse a partir de priceDifference — sigue sin haber dato real de margen de utilidad');
     assert(info.pendienteDe === null, 'pendienteDe debería quedar null cuando sí hay dato disponible');
+  });
+
+  await check('precioLista se relaya tal cual cuando el registro del proveedor lo trae (Fase 3, Paso 2)', () => {
+    const info = JSON.parse(run(`
+      (function () {
+        const fakeProvider = { getBySku: () => ({ precio: 50, precioLista: 61.9, stock: 4, estado: 'Stock bajo', priceDifference: 5 }) };
+        const ctx = ContextBuilder.build(0, { commercialProvider: fakeProvider });
+        return JSON.stringify(ctx.comercial);
+      })()
+    `));
+    assert(info.precioLista === 61.9, `Context Builder debería relayar precioLista tal cual (61.9), sin recalcularlo — se obtuvo ${info.precioLista}`);
   });
 
   await check('inyectando un commercialProvider disponible pero SIN registro para ese SKU: mismo comportamiento que sin proveedor', () => {
