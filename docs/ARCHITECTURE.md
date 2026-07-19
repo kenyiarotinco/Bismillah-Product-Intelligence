@@ -2312,3 +2312,161 @@ Verificación en navegador (perfil demo): sin errores de consola,
 no modificó ningún archivo servido al navegador (`assets/js/`), solo
 `server/` y `scripts/`, así que no había ningún comportamiento de UI que
 pudiera haber cambiado.
+
+## Activación controlada y validación manual con la API real (Fase 4, Paso 6)
+
+### Qué se acordó con el usuario antes de implementar
+
+Esta especificación pedía explícitamente una "validación manual de
+integración con la API real" — algo que los Pasos 4 y 5 habían evitado a
+propósito. Antes de escribir código se confirmaron dos decisiones: (1) esa
+validación real la ejecuta el usuario mismo, en su máquina, con su propia
+`GEMINI_API_KEY`, siguiendo una guía — no Claude, en esta sesión, con una
+key ajena; (2) "activación controlada" no deja ningún rastro en el
+repositorio — ningún archivo versionado define `FEATURE_FLAGS` ni
+`REMOTE_PROVIDER_CONFIG` en ningún perfil. Con eso acotado, el trabajo de
+este paso son dos entregables puramente de *tooling* y documentación —
+cero cambios en `assets/js/`, cero cambios en el comportamiento por
+defecto de cualquier perfil.
+
+### `scripts/manual-gemini-live-check.js` — deliberadamente incómodo de ejecutar por accidente
+
+Vive fuera de la convención `verify-*.js` a propósito: ese prefijo, en este
+proyecto, significa "parte de la regresión automática, 100% simulada, sin
+costo" — este script es lo opuesto (hace una llamada real y facturable),
+así que necesitaba un nombre que no prometiera lo mismo. Dos salvaguardas
+obligatorias, ambas verificadas en QA:
+
+1. **La API key solo se acepta por variable de entorno**
+   (`GEMINI_API_KEY=...`), nunca por argumento de línea de comandos —
+   evita que quede en el historial de la shell.
+2. **El flag `--confirmo-el-costo` es obligatorio.** Sin él, el script no
+   hace ninguna llamada de red bajo ninguna circunstancia — solo imprime el
+   modo de uso. No basta un flag "parecido"; se exige el texto exacto.
+
+Con ambas presentes, el script:
+
+```
+Node (manual-gemini-live-check.js)
+  └─ arranca server/gemini-proxy-server.js real, en un puerto libre, con la key real
+  └─ construye un PromptContext real (ContextBuilder + PromptContextBuilder reales)
+  └─ [1/2] llamada HTTP directa al proxy — diagnóstico crudo (status + cuerpo exactos)
+  └─ [2/2] la misma llamada, mediante RemoteResponseProvider — el camino real de la app
+  └─ cierra el proceso del proxy
+```
+
+### Por qué son DOS llamadas, no una
+
+`RemoteResponseProvider` oculta a propósito la causa exacta de un fallo
+(cae a Local en silencio — es la garantía de "nunca romper la UI" del Paso
+3). Eso es exactamente lo correcto para la aplicación, pero pésimo para
+diagnosticar un problema real durante una validación manual: si algo falla
+contra la Gemini real (key inválida, cuota agotada, timeout, una violación
+de grounding del Paso 5), el paso [2/2] por sí solo solo diría
+`source:"local"`, sin explicar por qué. El paso [1/2] —una llamada HTTP
+directa al proxy, sin pasar por el fallback— es el único lugar donde se ve
+el HTTP status y el mensaje de error real. La guía
+(`docs/GEMINI_MANUAL_VALIDATION.md`) incluye una tabla de síntomas → causa
+para los siete modos de fallo ya conocidos de `gemini-proxy-server.js`
+(Fase 4, Pasos 4 y 5).
+
+### Verificado en esta sesión sin gastar nada: un arnés de un solo uso, no commiteado
+
+Antes de entregar el script se verificó su plomería completa —parseo de
+argumentos, arranque del proxy, construcción del `PromptContext`,
+las dos llamadas, las tres ramas de skill (single-context,
+`compare-products` con A/B, y la rama con validación de grounding)— con un
+arnés temporal en el directorio de scratchpad de la sesión, que interceptó
+únicamente la llamada saliente hacia
+`generativelanguage.googleapis.com` para simular una respuesta exitosa de
+Gemini, dejando pasar sin tocar cualquier otra petición (incluida la
+llamada real del cliente al proxy local). Cero costo, cero key real, y el
+arnés se descartó al terminar — no forma parte del repositorio ni de la
+suite automática, que es exactamente por lo que sí se pudo verificar el
+cableado sin comprometer la decisión de "QA 100% simulada".
+
+### `scripts/verify-manual-gemini-check-safeguards.js` — lo único de este paso que SÍ es regresión automática
+
+Las dos salvaguardas (key solo por entorno, flag de confirmación
+obligatorio) son código como cualquier otro, y pueden regresar. Esta suite
+lanza `manual-gemini-live-check.js` como un proceso hijo real (mismo
+mecanismo que ya usa `verify-gemini-proxy-server.js` para el proxy) en
+cuatro escenarios — sin key, sin flag, con un skill inválido, y con un
+flag "parecido" pero no exacto— y confirma que en los cuatro casos el
+script sale con error ANTES de poder intentar cualquier llamada de red.
+Es regresión automática legítima porque nunca, en ningún escenario que
+prueba, se acerca a hacer una llamada real — es exactamente lo mismo que
+"QA 100% simulada" ya significaba en los Pasos 4 y 5, aplicado a un script
+distinto.
+
+### `docs/GEMINI_MANUAL_VALIDATION.md` — la guía que el usuario ejecuta por su cuenta
+
+Nuevo documento (no una sección de este archivo, deliberadamente: es un
+procedimiento operativo paso a paso, no arquitectura) con dos rutas:
+
+1. **Por línea de comandos** (recomendada, más simple): el script de
+   arriba, con ejemplos para las 5 habilidades y una tabla completa de
+   "qué revisar" y "qué puede fallar, y por qué" — incluyendo los dos
+   modos de fallo del grounding del Paso 5 (sku fuera de los candidatos,
+   disponibilidad inconsistente), explicando que el fallback a Local en
+   esos casos es exactamente la protección diseñada, no un error a
+   corregir.
+2. **En el navegador** (opcional, más profunda): cómo probarlo visualmente
+   en el panel real del Copilot, con la advertencia explícita de que
+   `FEATURE_FLAGS`/`REMOTE_PROVIDER_CONFIG` deben agregarse de forma
+   TEMPORAL a una copia local de `index.html` (nunca commiteada) — porque
+   `app.js` los lee una sola vez, al cargar la página, así que no hay forma
+   de inyectarlos después vía consola del navegador una vez que la página
+   ya decidió qué proveedor activar.
+
+### Fuera de alcance (deliberado, en este paso)
+
+- Ninguna llamada real a Gemini se ejecutó en esta sesión — por la decisión
+  explícita del usuario, la validación real queda en sus manos, fuera de
+  esta conversación.
+- Ningún perfil (`index.html`, `production.example/index.html`,
+  `production/index.html`) define `FEATURE_FLAGS` ni
+  `REMOTE_PROVIDER_CONFIG` — cero cambio de comportamiento por defecto.
+- Sin cambios en `ContextBuilder`, `CommercialDataProvider`, el pipeline
+  comercial, `LocalResponseProvider`, `PromptContextBuilder`,
+  `AIResponseProvider`, `RemoteResponseProvider`,
+  `gemini-proxy-server.js` ni `gemini-prompt-builder.js` — cero diff en
+  los nueve.
+
+### QA — Manual Gemini Check Safeguards (nueva)
+
+`scripts/verify-manual-gemini-check-safeguards.js` — **6/6 checks OK**:
+
+1. El script no referencia SDKs de otros proveedores de IA.
+2. Nunca acepta la API key como argumento de línea de comandos —
+   verificado por inspección del código fuente (ningún flag tipo
+   `--api-key`).
+3. Sin `GEMINI_API_KEY`: sale con error, sin llamada de red, incluso con
+   el flag de confirmación presente.
+4. Con key pero sin `--confirmo-el-costo`: sale con error, sin llamada de
+   red.
+5. Con key y flag, pero un `--skill` desconocido: sale con error antes de
+   intentar cualquier llamada.
+6. El flag de confirmación exige el texto exacto — una variación
+   (`--confirmo`) no basta.
+
+Se volvieron a correr las 12 suites restantes en el mismo momento —
+`scripts/verify-context-builder.js` (**10/10**),
+`scripts/verify-commercial-data.js` (**8/8**),
+`scripts/verify-response-provider.js` (**9/9**),
+`scripts/verify-compare-products.js` (**10/10**),
+`scripts/verify-best-alternative.js` (**10/10**),
+`scripts/verify-cross-sell.js` (**10/10**),
+`scripts/verify-price-availability.js` (**12/12**),
+`scripts/verify-ai-provider-abstraction.js` (**10/10**),
+`scripts/verify-prompt-context-builder.js` (**17/17**),
+`scripts/verify-remote-response-provider.js` (**15/15**),
+`scripts/verify-gemini-prompt-builder.js` (**17/17**) y
+`scripts/verify-gemini-proxy-server.js` (**22/22**) — cero regresión sobre
+las Fases 2, 3 y 4 · Pasos 1-5. **Total: 156/156 checks.**
+
+Verificación adicional: se confirmó, con `grep` sobre los tres
+`index.html`, que ninguno define `FEATURE_FLAGS=` ni
+`REMOTE_PROVIDER_CONFIG=` — cero coincidencias. Verificación en navegador
+(perfil demo): sin errores de consola, comportamiento idéntico al actual —
+este paso no modificó ningún archivo servido al navegador.

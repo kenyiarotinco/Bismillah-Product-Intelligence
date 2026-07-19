@@ -114,10 +114,13 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin build step. La
 │   ├── verify-prompt-context-builder.js  # QA headless (Node) del Prompt Context Builder (Fase 4)
 │   ├── verify-remote-response-provider.js # QA headless (Node) del Remote Response Provider: integración, fallback, timeout y flag desactivado (Fase 4)
 │   ├── verify-gemini-proxy-server.js      # QA headless (Node) del Gemini Proxy Server: servidor HTTP real, grounding y end-to-end con las 5 habilidades (Fase 4)
-│   └── verify-gemini-prompt-builder.js    # QA headless (Node) del Gemini Prompt Builder: schema y grounding por habilidad (Fase 4)
+│   ├── verify-gemini-prompt-builder.js    # QA headless (Node) del Gemini Prompt Builder: schema y grounding por habilidad (Fase 4)
+│   ├── manual-gemini-live-check.js        # Validación MANUAL (fuera de la regresión) contra la API real de Gemini — ver docs/GEMINI_MANUAL_VALIDATION.md (Fase 4)
+│   └── verify-manual-gemini-check-safeguards.js # QA headless (Node) de las salvaguardas del script manual (nunca llama a la red sin key+flag) (Fase 4)
 └── docs/
     ├── PROJECT_BRIEF.md           # Objetivo, dominio, alcance y supuestos del MVP; estado de las Fases 2-4
     ├── ARCHITECTURE.md            # Arquitectura del AI Sales Copilot y de los datos comerciales (Fases 2-4)
+    ├── GEMINI_MANUAL_VALIDATION.md # Guía paso a paso para validar la integración contra la API real de Gemini (Fase 4)
     └── QUALITY_REPORT.md          # Resultados de verificación por categoría
 ```
 
