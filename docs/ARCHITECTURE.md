@@ -1733,3 +1733,227 @@ generando recomendaciones reales exactamente igual que antes de este paso
 — prueba funcional de que agregar el módulo (sin conectarlo a nada) no
 alteró el comportamiento visible del Copilot. Sin cambio visual en el
 panel.
+
+## Remote Response Provider (Fase 4, Paso 3)
+
+### Responsabilidad: el primer consumidor real de PromptContextBuilder
+
+`assets/js/providers/remote-response-provider.js` es el primer proveedor
+que efectivamente construye un `PromptContext` (vía
+`PromptContextBuilder.build()`, sin tocar su API) y hace algo con él: lo
+envía por HTTP a un endpoint configurable. A diferencia de
+`AIResponseProvider` (Paso 1, un placeholder que siempre rechaza) y de
+`LocalResponseProvider` (reglas locales, sin red), `RemoteResponseProvider`
+cumple exactamente el mismo `ResponseProviderContract` pero delega en un
+backend externo — y cae automáticamente a `LocalResponseProvider` ante
+cualquier fallo de esa ruta.
+
+```
+Context → PromptContextBuilder.build() → PromptContext → fetch(endpoint) → respuesta
+                                                                │
+                                                    cualquier error ──▶ LocalResponseProvider (fallback)
+```
+
+### El mecanismo de activación: `FeatureFlags`, un módulo nuevo porque no existía ninguno
+
+La especificación pedía "el feature flag existente (o uno equivalente si
+aún no existe)" — no existía ninguno en el proyecto, así que se creó
+`assets/js/feature-flags.js`, deliberadamente mínimo:
+
+```js
+FeatureFlags.isEnabled(name)  // boolean
+```
+
+Mismo patrón ya usado por `CommercialDataProvider` para `COMMERCIAL_DATA`:
+un global opcional (`FEATURE_FLAGS`), leído con `typeof ... !== 'undefined'`
+— nunca `window.` — que ningún perfil de este repositorio define hoy. Sin
+ese global, **todos** los flags quedan deshabilitados por defecto, para
+cualquier flag futuro, no solo `remoteResponseProvider`. Es la misma
+garantía de "ausencia de configuración = comportamiento de siempre" que ya
+sostiene `COMMERCIAL_DATA` desde la Fase 3.
+
+### Dónde se lee el flag: una sola línea en `app.js`, igual que en cada paso anterior
+
+```js
+// app.js
+ResponseProvider.use(
+  FeatureFlags.isEnabled('remoteResponseProvider') ? RemoteResponseProvider : LocalResponseProvider
+);
+```
+
+Es, literalmente, la línea que Paso 1 y Paso 3 de la Fase 2 ya
+anticipaban ("cambiar ESTA línea por `ResponseProvider.use(GeminiResponseProvider)`")
+— ahora es una expresión condicional en vez de una referencia fija, pero
+sigue siendo la única línea de todo el sistema que decide qué proveedor
+sirve al Copilot. Ningún handler de skill (`onExplainProductClick()`,
+`onCompareProductsClick()`, etc.) cambió: todos siguen llamando a
+`ResponseProvider.get().<skill>(context)` sin saber ni que existe un
+proveedor remoto.
+
+Como ningún perfil de este repositorio define `FEATURE_FLAGS`, esta línea
+resuelve exactamente igual que antes de este paso:
+`ResponseProvider.use(LocalResponseProvider)`. **Cero cambio de
+comportamiento**, verificado en navegador y en las 1.094+1.094 (sintético
+y real) comparaciones de la suite de este paso.
+
+### Fallback automático: por qué cubre más que "la llamada de red falla"
+
+`callRemote()` puede fallar por seis razones distintas, y las seis se
+tratan exactamente igual — un `throw`/rechazo que activa el fallback:
+
+1. El flag está deshabilitado.
+2. No hay `REMOTE_PROVIDER_CONFIG.endpoint` configurado.
+3. `fetch` no existe en el entorno.
+4. La promesa de `fetch` se rechaza (fallo de red real).
+5. La respuesta HTTP no es `ok` (4xx/5xx).
+6. El cuerpo no es JSON válido, o no trae el `skill` esperado (contrato de
+   forma incumplido por el backend).
+
+Cada método público (`explainProduct`, `compareProducts`, etc.) envuelve su
+intento remoto en `Promise.resolve().then(remoteAttempt).catch(localFallback)`
+— no un simple `.catch()` sobre una llamada directa. La razón: construir el
+`PromptContext` (`PromptContextBuilder.build(context, ...)`) puede lanzar
+de forma **síncrona** si `context` es inválido (mismo comportamiento que
+Paso 2 diseñó a propósito — ver la sección anterior). Sin el
+`Promise.resolve().then(...)`, ese throw síncrono escaparía antes de que
+cualquier `.catch()` pudiera capturarlo. Con él, hasta ese caso límite cae
+al mismo fallback que un fallo de red — verificado explícitamente en QA
+(`RemoteResponseProvider.explainProduct(null)` rechaza con el mismo mensaje
+que `LocalResponseProvider.explainProduct(null)`).
+
+El fallback nunca "reintenta" ni "arregla" nada: simplemente delega en
+`LocalResponseProvider.<skill>(context)` y devuelve exactamente lo que ese
+proveedor hubiera devuelto — la misma respuesta, byte a byte (salvo
+`generatedAt`, inevitablemente distinto entre dos llamadas independientes
+al reloj), que si `LocalResponseProvider` hubiera estado activo desde el
+principio.
+
+### Por qué `compareProducts` construye DOS `PromptContext`, no uno
+
+`compareProducts(contextA, contextB)` recibe dos contextos ya construidos
+de forma independiente (misma responsabilidad de siempre: la orquestación
+en `app.js` los arma, este proveedor nunca llama a `ContextBuilder`).
+`RemoteResponseProvider` los transforma cada uno por separado
+(`PromptContextBuilder.build(contextA, ...)` /
+`PromptContextBuilder.build(contextB, ...)`) y envía ambos en el mismo
+payload (`{a, b}`) — el backend remoto recibiría la misma información
+completa y desacoplada que ya usa `LocalResponseProvider.compareProducts`
+internamente (`summarizeForCompare` para A y para B), solo que en la forma
+`PromptContext` en vez de la forma interna de Local.
+
+### `userIntent`: el único dato que este proveedor SÍ aporta, honestamente
+
+Cada método pasa `{ intent: { skill: '<nombre-del-método>' } }` a
+`PromptContextBuilder.build()`. No es una intención inferida ni adivinada
+— es literalmente el nombre de la habilidad que se está invocando, la
+misma información que ya viaja en el campo `skill` de cualquier respuesta
+del contrato. Sigue al pie de la letra el diseño del Paso 2: `userIntent`
+nunca se fabrica, solo se relaya lo que el llamador sabe con certeza.
+
+### Qué NO valida `RemoteResponseProvider` del cuerpo remoto, y por qué
+
+Solo se verifica `body.skill === skill` antes de confiar en la respuesta —
+no se valida cada campo interno (`text`, `similitudes`, `precio`, etc.)
+contra el contrato completo. Validar de más, contra un backend que hoy no
+existe, sería código especulativo sin nada real que lo ejercite. El
+`skill` es la única señal barata y universal (aplica a las 5 habilidades
+por igual) de que "esto parece una respuesta con sentido" — cualquier
+forma más profundamente incorrecta que igual declare el `skill` correcto
+quedaría, en la práctica, expuesta al usuario tal cual, la misma confianza
+que ya se deposita en `LocalResponseProvider` (no hay una segunda capa de
+validación de sus respuestas tampoco).
+
+### Fuera de alcance (deliberado, en este paso)
+
+- Sin backend real: `REMOTE_PROVIDER_CONFIG` no está definido en ninguna de
+  las tres páginas — no existe ningún endpoint al que efectivamente se
+  pueda llamar hoy. Este paso entrega el mecanismo, no un servicio.
+- Sin API key, autenticación, rate limiting, timeout explícito ni
+  reintentos — nada de eso tiene sentido diseñar todavía sin un backend
+  real contra el cual validarlo; quedan para cuando exista una
+  especificación de ese backend.
+- Sin cambios en `ContextBuilder`, `CommercialDataProvider`, el pipeline
+  comercial, `LocalResponseProvider`, `PromptContextBuilder` ni
+  `AIResponseProvider` — cero diff en los seis.
+- `AIResponseProvider` (Paso 1) y `RemoteResponseProvider` (este paso)
+  siguen siendo proveedores independientes, no relacionados: el primero es
+  un placeholder que siempre rechaza: el segundo, un proveedor funcional
+  con fallback. Unificarlos no fue pedido y mezclaría dos propósitos
+  distintos.
+
+### QA — Remote Response Provider
+
+`scripts/verify-remote-response-provider.js` — mismo enfoque headless que
+los pasos anteriores, con una diferencia: en vez de simular ausencia de
+datos, simula respuestas de `fetch` inyectando una implementación falsa en
+el sandbox de Node **antes** de cargar los módulos (mismo mecanismo que ya
+usa `CommercialDataProvider` para inyectar un `commercialProvider` de
+prueba). Verifica:
+
+1. Guardrail estático de `remote-response-provider.js`: cero referencias a
+   `XMLHttpRequest`, `document`, `window`, `gemini`, `openai`, `anthropic`
+   — pero **sí** se exige la presencia de `fetch` (positivo, no negativo):
+   este archivo es el único de todo el proyecto donde una llamada de red
+   real es el comportamiento correcto, no una violación.
+2. Guardrail estático de `feature-flags.js`: cero referencias a red, DOM o
+   SDKs de IA — es un mecanismo puro, sin ningún efecto secundario.
+3. `ResponseProviderContract.implementedBy(RemoteResponseProvider) === true`
+   — cumple el mismo contrato que Local y AI, verificado dinámicamente; y
+   `ResponseProvider.use(RemoteResponseProvider)` lo acepta como proveedor
+   válido.
+4. `FeatureFlags.isEnabled()` es `false` por defecto (sin `FEATURE_FLAGS`),
+   `false` para cualquier flag no listado explícitamente, y `true`
+   únicamente cuando el flag correspondiente está explícitamente en `true`.
+5. **Flag desactivado (el estado real de las tres páginas hoy):** las 5
+   habilidades de `RemoteResponseProvider` producen exactamente el mismo
+   resultado que `LocalResponseProvider` — y `fetch` nunca se invoca.
+6. Flag activado sin `REMOTE_PROVIDER_CONFIG`: cae a Local sin invocar
+   `fetch`.
+7. Flag activado + config presente + `fetch` rechaza (fallo de red): cae a
+   Local automáticamente.
+8. Flag activado + config presente + `fetch` resuelve con `ok:false`
+   (HTTP 500): cae a Local automáticamente.
+9. Flag activado + config presente + cuerpo remoto con `skill` que no
+   coincide (contrato de forma incumplido): cae a Local automáticamente.
+10. Flag activado + config presente + `.json()` rechaza (cuerpo no es JSON
+    válido): cae a Local automáticamente.
+11. **Caso feliz:** flag activado + config presente + `fetch` resuelve con
+    una respuesta válida → se devuelve el cuerpo remoto tal cual (no el de
+    Local) — prueba de que la ruta feliz también está genuinamente cableada,
+    no solo el fallback.
+12. `compareProducts` construye y envía dos `PromptContext` completos e
+    independientes (A y B) — verificado inspeccionando el cuerpo real
+    capturado de la llamada a `fetch`, no solo el resultado final.
+13. Un contexto inválido (`null`) rechaza con el **mismo mensaje exacto**
+    que produciría `LocalResponseProvider` directamente — el caso límite
+    del throw síncrono dentro de `PromptContextBuilder.build()`.
+14. **Los 1.094 productos del catálogo**, con el flag desactivado: las
+    habilidades "Explicar producto" y "Precio y disponibilidad" son
+    idénticas a Local en cada uno, sin excepciones, y sin una sola llamada
+    a `fetch` en todo el recorrido.
+
+Resultado: **14/14 checks OK**, verificado también manualmente contra
+`production/data.js` (1.094 productos reales, cero diferencias frente a
+Local). Se volvieron a correr las 9 suites anteriores en el mismo
+momento — `scripts/verify-context-builder.js` (**10/10**),
+`scripts/verify-commercial-data.js` (**8/8**),
+`scripts/verify-response-provider.js` (**9/9**),
+`scripts/verify-compare-products.js` (**10/10**),
+`scripts/verify-best-alternative.js` (**10/10**),
+`scripts/verify-cross-sell.js` (**10/10**),
+`scripts/verify-price-availability.js` (**12/12**),
+`scripts/verify-ai-provider-abstraction.js` (**10/10**) y
+`scripts/verify-prompt-context-builder.js` (**17/17**) — cero regresión
+sobre las Fases 2, 3 y 4 · Pasos 1-2. Ninguna de las nueve suites
+necesitó ningún ajuste.
+
+Verificación adicional en navegador (perfil demo): sin errores de consola;
+`ResponseProvider.get() === LocalResponseProvider` tras la carga (el flag
+sigue sin definirse en las tres páginas); `FeatureFlags.isEnabled('remoteResponseProvider') === false`;
+`ResponseProviderContract.implementedBy(RemoteResponseProvider) === true`.
+Flujo completo probado en Producto 360: "Venta cruzada inteligente"
+(habilidad 5) etiquetada `local` en el panel, generando recomendaciones
+reales exactamente igual que antes de este paso — prueba funcional
+definitiva de que introducir el mecanismo completo (flag + proveedor
+remoto + fallback) sin habilitarlo no altera en absoluto el comportamiento
+visible del Copilot.

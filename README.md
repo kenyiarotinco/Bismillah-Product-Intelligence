@@ -78,12 +78,14 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin backend ni bui
 │   └── js/
 │       ├── app.js                 # Lógica de la aplicación (vistas, búsqueda, motores, canvas, orquestación del Copilot)
 │       ├── context-builder.js     # Construye el contexto de producto para el AI Sales Copilot (sin IA, sin red)
-│       ├── prompt-context-builder.js  # Transforma el Context en un PromptContext estructurado para un futuro AIResponseProvider (Fase 4) — sin consumidor todavía
+│       ├── prompt-context-builder.js  # Transforma el Context en un PromptContext estructurado, consumido por RemoteResponseProvider (Fase 4)
 │       ├── response-provider-contract.js  # Interfaz común que debe cumplir cualquier proveedor de respuestas (Fase 4)
 │       ├── response-provider.js   # Puerto: registro del proveedor de respuestas activo del Copilot (5 habilidades)
 │       ├── commercial-data-provider.js  # Adaptador: Context Builder pide datos comerciales por SKU, sin conocer su fuente (Fase 3)
+│       ├── feature-flags.js       # Mecanismo de activación por flags (Fase 4) — todo flag deshabilitado por defecto
 │       ├── providers/
 │       │   ├── local-response-provider.js  # Proveedor local (sin IA, sin red) — las 5 habilidades del Copilot, activo hoy
+│       │   ├── remote-response-provider.js # Proveedor remoto (Fase 4) — usa PromptContextBuilder, gobernado por feature flag, fallback automático a Local ante cualquier error
 │       │   └── ai-response-provider.js     # Placeholder de proveedor de IA (Fase 4) — cumple el contrato, rechaza toda llamada, inactivo
 │       └── data.js                # Dataset SINTÉTICO — es el dato por defecto del repo, versionado
 ├── production/                    # Perfil real — IGNORADO POR GIT (no existe en el repo clonado)
@@ -105,7 +107,8 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin backend ni bui
 │   ├── verify-cross-sell.js         # QA headless (Node) de "Venta cruzada inteligente"
 │   ├── verify-price-availability.js # QA headless (Node) de "Precio y disponibilidad"
 │   ├── verify-ai-provider-abstraction.js # QA headless (Node) del contrato de proveedores y del placeholder de IA (Fase 4)
-│   └── verify-prompt-context-builder.js  # QA headless (Node) del Prompt Context Builder (Fase 4)
+│   ├── verify-prompt-context-builder.js  # QA headless (Node) del Prompt Context Builder (Fase 4)
+│   └── verify-remote-response-provider.js # QA headless (Node) del Remote Response Provider: integración, fallback y flag desactivado (Fase 4)
 └── docs/
     ├── PROJECT_BRIEF.md           # Objetivo, dominio, alcance y supuestos del MVP; estado de las Fases 2-4
     ├── ARCHITECTURE.md            # Arquitectura del AI Sales Copilot y de los datos comerciales (Fases 2-4)

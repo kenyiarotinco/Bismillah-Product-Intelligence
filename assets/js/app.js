@@ -326,12 +326,18 @@ const COPILOT_SKILLS = [
   { key: 'cross-sell', icon: '🧠', title: 'Venta cruzada inteligente', desc: 'Sugiere productos complementarios y explica por qué recomendarlos.', bg: 'rgba(194,85,127,.14)', fg: 'var(--t5)' },
 ];
 
-// Proveedor activo del AI Sales Copilot — hoy, el local (sin red, sin IA).
-// Reemplazarlo por Gemini (u otro proveedor real) más adelante se reduce a
-// cambiar ESTA línea por `ResponseProvider.use(GeminiResponseProvider);`:
-// ni el panel, ni ContextBuilder, ni Producto 360 necesitan tocarse — ver
+// Proveedor activo del AI Sales Copilot. Gobernado por el feature flag
+// `remoteResponseProvider` (Fase 4, Paso 3 — ver assets/js/feature-flags.js):
+// ningún perfil de este repositorio lo habilita hoy, así que esta línea
+// sigue seleccionando LocalResponseProvider exactamente como antes de ese
+// paso — cero cambio de comportamiento. Habilitar el proveedor remoto en un
+// despliegue futuro no requiere tocar esta línea ni ninguna otra parte del
+// sistema: solo definir `FEATURE_FLAGS = { remoteResponseProvider: true }`
+// y `REMOTE_PROVIDER_CONFIG` antes de este script — ver
 // docs/ARCHITECTURE.md.
-ResponseProvider.use(LocalResponseProvider);
+ResponseProvider.use(
+  FeatureFlags.isEnabled('remoteResponseProvider') ? RemoteResponseProvider : LocalResponseProvider
+);
 
 // Estado de "Explicar producto". Sigue el mismo patrón que p360Expanded:
 // vive a nivel de módulo, se reinicia en openProduct() y sobrevive a los
