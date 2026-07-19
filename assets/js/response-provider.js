@@ -1,4 +1,4 @@
-/* Bismillah Product Intelligence Platform — Response Provider (Fase 2, Pasos 3-5)
+/* Bismillah Product Intelligence Platform — Response Provider (Fase 2, Pasos 3-6)
  *
  * Puerto/contrato que desacopla al AI Sales Copilot de CÓMO se generan sus
  * respuestas. Cualquier proveedor —el local de hoy, o más adelante Google
@@ -39,6 +39,16 @@
  *     mensaje: string | null,              // presente solo si encontrado === false
  *   }>
  *
+ *   crossSell(context) => Promise<{
+ *     skill: 'cross-sell',
+ *     source: string,
+ *     generatedAt: string,
+ *     recomendaciones: Array<{ sku: string, nombre: string, razon: string }>,
+ *     // ordenadas por relevancia (mayor score primero) — ver
+ *     // providers/local-response-provider.js para el criterio exacto.
+ *     mensaje: string | null,   // presente solo si recomendaciones está vacío
+ *   }>
+ *
  * `context`/`contextA`/`contextB` son exactamente los objetos que devuelve
  * ContextBuilder.build() — ningún proveedor recibe ni el DOM, ni el índice
  * del producto, ni nada de app.js.
@@ -50,15 +60,15 @@
  * una línea del código que lo invoca — solo cambia cuánto tarda en
  * resolverse la misma Promise que ya se estaba esperando.
  *
- * Habilidades futuras (Precio y disponibilidad, Venta cruzada) se añadirán a
- * este mismo contrato como nuevos métodos cuando se aprueben sus propios
- * pasos — no antes, para no comprometerse hoy con una forma que todavía no
- * se ha diseñado.
+ * Última habilidad pendiente (Precio y disponibilidad) se añadirá a este
+ * mismo contrato como un nuevo método cuando se apruebe su propio paso — no
+ * antes, para no comprometerse hoy con una forma que todavía no se ha
+ * diseñado.
  */
 'use strict';
 
 const ResponseProvider = (function () {
-  const REQUIRED_METHODS = ['explainProduct', 'compareProducts', 'bestAlternative'];
+  const REQUIRED_METHODS = ['explainProduct', 'compareProducts', 'bestAlternative', 'crossSell'];
   let active = null;
 
   function assertShape(provider) {

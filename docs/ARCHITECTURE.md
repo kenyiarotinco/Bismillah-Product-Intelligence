@@ -8,10 +8,10 @@ Usuario → AI Sales Copilot (panel, app.js) → Context Builder → Response Pr
 ```
 
 - **Context Builder** (Paso 2): construye el contexto de un producto.
-- **Response Provider** (Pasos 3-5): a partir de uno o más contextos, genera
+- **Response Provider** (Pasos 3-6): a partir de uno o más contextos, genera
   la respuesta de una habilidad concreta del Copilot — hoy, "Explicar
-  producto" (Paso 3), "Comparar productos" (Paso 4) y "Mejor alternativa"
-  (Paso 5).
+  producto" (Paso 3), "Comparar productos" (Paso 4), "Mejor alternativa"
+  (Paso 5) y "Venta cruzada inteligente" (Paso 6).
 
 ## Context Builder (Fase 2, Paso 2)
 
@@ -183,7 +183,7 @@ Verificación adicional en navegador: `index.html` con el nuevo
 `ContextBuilder` disponible en consola, Producto 360 y el panel AI Sales
 Copilot se renderizan igual que antes de este paso, sin errores de consola.
 
-## Response Provider (Fase 2, Pasos 3-5)
+## Response Provider (Fase 2, Pasos 3-6)
 
 ### Responsabilidad
 
@@ -231,8 +231,9 @@ Esa pieza es UI por definición — vive en `app.js`, junto al resto del panel
 del Copilot (`copilotPanelHTML()`, `wireCopilotPanel()`,
 `onExplainProductClick()`, desde el Paso 4 también
 `onCompareProductsClick()` / `onCompareSearchInput()` /
-`onCompareProductBSelected()`, y desde el Paso 5 también
-`onBestAlternativeClick()`). No se extrajo a un archivo aparte porque, a
+`onCompareProductBSelected()`, desde el Paso 5 también
+`onBestAlternativeClick()`, y desde el Paso 6 también
+`onCrossSellClick()`). No se extrajo a un archivo aparte porque, a
 diferencia de Context Builder y Response Provider, esta pieza SÍ necesita el
 DOM y el estado de Producto 360 (`p360Current`) — no hay nada que ganar
 desacoplándola, y el proyecto no usa un framework de componentes que
@@ -250,7 +251,7 @@ modificar Producto 360".
 
 ```js
 // response-provider.js — el puerto
-ResponseProvider.use(provider)   // registra el proveedor activo; valida que implemente explainProduct(), compareProducts() y bestAlternative()
+ResponseProvider.use(provider)   // registra el proveedor activo; valida que implemente las 4 habilidades del contrato
 ResponseProvider.get()           // devuelve el proveedor activo; lanza si no hay ninguno
 ResponseProvider.isReady()       // true/false
 
@@ -282,6 +283,14 @@ provider.bestAlternative(context) => Promise<{
   afinidad: 'Alta' | 'Media' | null,
   justificacion: string | null,
   mensaje: string | null,   // presente solo si encontrado === false
+}>
+
+provider.crossSell(context) => Promise<{
+  skill: 'cross-sell',
+  source: string,
+  generatedAt: string,
+  recomendaciones: Array<{ sku: string, nombre: string, razon: string }>,
+  mensaje: string | null,   // presente solo si recomendaciones está vacío
 }>
 ```
 
@@ -372,12 +381,12 @@ la respuesta que el Copilot ya generó. Se verificó manualmente en navegador.
 
 ### Fuera de alcance (deliberado, en el Paso 3)
 
-- Las otras dos habilidades restantes (Precio y disponibilidad, Venta
-  cruzada inteligente) siguen en "Próximamente", sin `data-skill` ni
-  listener — el contrato de `ResponseProvider` solo exigía `explainProduct`
-  en este paso; se amplió con `compareProducts` en el Paso 4 y con
-  `bestAlternative` en el Paso 5 (ver más abajo), y seguirá creciendo método
-  por método cuando cada habilidad tenga su propia especificación aprobada.
+- La única habilidad restante (Precio y disponibilidad) sigue en
+  "Próximamente", sin `data-skill` ni listener — depende de la Fase 1 de
+  Integración de Datos. El contrato de `ResponseProvider` solo exigía
+  `explainProduct` en este paso; se amplió con `compareProducts` en el
+  Paso 4, con `bestAlternative` en el Paso 5 y con `crossSell` en el
+  Paso 6 (ver más abajo).
 - No hay proveedor Gemini, ni configuración de API key, ni ningún código de
   red — ver la sección anterior sobre qué queda pendiente para ese paso.
 - No hay caché de respuestas entre productos ni entre sesiones: cada clic
@@ -740,3 +749,137 @@ Responsive (375 px) verificado con una recomendación de confianza Media
 visible, chip ámbar renderizado correctamente. Sin errores de consola en
 ningún caso. Habilidades 3 y 5 permanecen visualmente idénticas a como
 quedaron aprobadas en el Paso 1.
+
+## Venta cruzada inteligente (Fase 2, Paso 6)
+
+### Mismo patrón que "Mejor alternativa": un solo contexto, disparo automático
+
+Igual que "Mejor alternativa" y a diferencia de "Comparar productos", los
+candidatos de venta cruzada y sus justificaciones ya vienen incluidos en
+`relaciones.detalle` del contexto del producto actual — no hace falta un
+segundo `ContextBuilder.build()` por candidato. `onCrossSellClick()` es,
+línea por línea, la misma forma que `onBestAlternativeClick()`: clic →
+`loading` → un único `ContextBuilder.build(p360Current, { maxPerType:
+COMPARE_MAX_PER_TYPE })` → `ResponseProvider.get().crossSell(context)` →
+`done`/`error`. No se inventó un patrón nuevo para este paso: se reutilizó
+el que ya existía para la habilidad más parecida.
+
+### El criterio de negocio ya existe — no se duplica su código, se reaplica
+
+El motor de "Venta cruzada" en Motores (`engineRecos()`, pestaña `cross`,
+`app.js`) ya resolvió esta pregunta: qué tipos de relación cuentan para
+venta cruzada y cuánto pesa cada uno.
+
+```js
+// app.js — ya existente, sin tocar
+const CROSS_TYPE_W = {4:3.0, 1:2.0, 5:1.5, 2:1.0};  // COMPLEMENTA, MISMO_BENEFICIO, MISMA_AUDIENCIA, MISMO_INGREDIENTE
+const CONF_W = [1.0, 0.6, 0.25];
+```
+
+`local-response-provider.js` no puede *importar* estas constantes — son
+internas de `app.js`, y depender de ellas rompería la independencia del
+proveedor respecto de `app.js` que se viene sosteniendo desde el Paso 2. En
+su lugar, `crossSellWeight()` reexpresa el mismo criterio con sus propias
+constantes (`CROSS_SELL_TYPE_WEIGHT`, `CROSS_SELL_CONF_WEIGHT`), usando los
+mismos nombres de tipo (`COMPLEMENTA`, `MISMO_BENEFICIO`, etc.) que ya
+expone `ContextBuilder`, y con Baja excluida directamente en el diccionario
+de pesos en vez de un `if` aparte — una forma distinta de aplicar la misma
+regla de negocio, no una regla nueva. Es la tercera vez que este proyecto
+toma esta decisión (`familiaCodigo` en el Paso 2, `TYPE_LABELS` en el
+Paso 3, y ahora los pesos de venta cruzada): mantener al proveedor
+desacoplado de `app.js` vale más que ahorrarse siete líneas de constantes
+duplicadas.
+
+### Cómo se agregan y ordenan las recomendaciones
+
+A diferencia de "Mejor alternativa" (un solo ganador), aquí un mismo
+producto candidato puede aparecer conectado al producto actual por **más
+de una** relación elegible a la vez (p. ej. `COMPLEMENTA` y
+`MISMO_BENEFICIO` simultáneamente). `buildCrossSell()` agrupa por SKU del
+candidato en un `Map`, sumando el peso de cada relación elegible que
+comparten — un candidato con dos señales reales pesa más que uno con una
+sola, y eso se refleja directamente en su posición en la lista. El
+desempate (mismo score) usa primero la cantidad de señales distintas y
+luego el nombre alfabético — determinista, sin fabricar un criterio nuevo
+para romper empates.
+
+La razón mostrada por candidato cita la relación de **mayor peso** entre
+todas las que aportó (no la primera que aparece en `relaciones.detalle`,
+que sigue el orden de `ContextBuilder`, no el de relevancia para venta
+cruzada) y, si hay señales adicionales, las menciona en una segunda frase
+("También comparte: ..."). Se limita a 5 recomendaciones
+(`CROSS_SELL_MAX_RESULTS`) — suficiente para una lista útil en un panel
+lateral de 340px sin abrumar, mostrando que las recomendaciones "están
+ordenadas por relevancia" (criterio de aceptación) de forma visible, no
+solo internamente.
+
+### Qué pasa si no hay ningún candidato elegible
+
+Mismo principio ya aplicado en "Mejor alternativa" y "Comparar productos":
+si ningún producto está conectado al actual por COMPLEMENTA,
+MISMO_BENEFICIO, MISMA_AUDIENCIA o MISMO_INGREDIENTE con confianza
+suficiente, `crossSell` devuelve `recomendaciones: []` con un `mensaje`
+honesto — nunca una lista vacía sin explicación, y nunca un candidato
+forzado solo para no devolver nada.
+
+### Fuera de alcance (deliberado, en el Paso 6)
+
+- Sin Precio/Stock/Margen/Estado en la justificación — el bloque
+  `comercial` del Context Builder sigue en `null`.
+- Tope fijo de 5 recomendaciones, no configurable desde la UI — no había un
+  requisito que lo pidiera, y un tope fijo es más simple que exponer un
+  control nuevo para algo no solicitado.
+- No se reutilizó el candidato de "Mejor alternativa" (SUSTITUYE) como
+  señal de venta cruzada — son conceptualmente opuestos (sustituir vs.
+  complementar), y el motor de Motores tampoco los mezcla.
+
+### QA — Venta cruzada inteligente
+
+`scripts/verify-cross-sell.js` — mismo enfoque headless que los pasos
+anteriores: carga `data.js` + `context-builder.js` + `response-provider.js`
++ `providers/local-response-provider.js` en un sandbox de Node, sin DOM ni
+red, y verifica:
+
+1. Guardrail estático sobre código ejecutable (no comentarios): cero
+   referencias a `fetch`, `XMLHttpRequest`, `document`, `window`, `gemini`,
+   `openai`, `anthropic`.
+2. `ResponseProvider.use()` ahora exige **también** `crossSell` — un
+   proveedor sin ese método es rechazado.
+3. Un producto sin relaciones elegibles (verificado con un índice real del
+   catálogo que sí tiene otras relaciones, para confirmar que no es un nodo
+   aislado) devuelve una lista vacía con mensaje honesto.
+4. Un producto con relaciones elegibles devuelve recomendaciones reales,
+   verificablemente ordenadas por score descendente (recalculado de forma
+   independiente en el test a partir de los datos crudos del contexto), con
+   `sku` y `razon` en cada una, acotadas a 5.
+5. Ninguna razón cita jamás una relación de confianza Baja.
+6. Un candidato con varias relaciones elegibles distintas (probado con un
+   producto real con 3 tipos elegibles) queda reflejado como tal en su
+   razón ("También comparte").
+7. La razón del primer recomendado incluye el texto real de al menos una
+   de sus relaciones reales con el producto actual — no texto genérico.
+8. Un contexto inválido (`null`) rechaza la Promise en vez de lanzar de
+   forma síncrona.
+9. `explainProduct`, `compareProducts` y `bestAlternative` siguen
+   funcionando exactamente igual tras ampliar el contrato con `crossSell`.
+10. **Los 1.094 productos del catálogo**, uno por uno: la lista nunca supera
+    5 elementos y nunca queda vacía sin `mensaje`.
+
+Resultado: **10/10 checks OK**. Se volvieron a correr
+`scripts/verify-context-builder.js` (**10/10**),
+`scripts/verify-response-provider.js` (**9/9**),
+`scripts/verify-compare-products.js` (**10/10**) y
+`scripts/verify-best-alternative.js` (**10/10**) en el mismo momento — cero
+regresión sobre los Pasos 2, 3, 4 y 5.
+
+Verificación adicional en navegador: producto con 3 tipos de relación
+elegibles (lista de 5 recomendaciones rankeadas, primera razón combinando
+COMPLEMENTA + MISMO_BENEFICIO vía "También comparte") y producto sin
+candidatos elegibles (mensaje honesto). Las cuatro habilidades
+—"Explicar producto", "Comparar productos" (implícito, sin regresión),
+"Mejor alternativa" y "Venta cruzada"— verificadas coexistiendo sin
+interferencia de estado. Cambiar de producto reinicia las cuatro. Responsive
+(375 px) verificado con la lista completa de 5 recomendaciones visible. Sin
+errores de consola en ningún caso. La habilidad restante (Precio y
+disponibilidad) permanece visualmente idéntica a como quedó aprobada en el
+Paso 1.

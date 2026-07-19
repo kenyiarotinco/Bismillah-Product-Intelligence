@@ -323,7 +323,7 @@ const COPILOT_SKILLS = [
   { key: 'compare-products', icon: '⚖️', title: 'Comparar productos', desc: 'Compara dos productos comercialmente.', bg: 'var(--indigo-tint)', fg: 'var(--indigo)' },
   { key: null, icon: '💰', title: 'Precio y disponibilidad', desc: 'Consulta precio, stock y estado.', bg: 'var(--amber-tint)', fg: '#8A5A14' },
   { key: 'best-alternative', icon: '💲', title: 'Mejor alternativa', desc: 'Encuentra el mejor sustituto.', bg: 'rgba(122,95,191,.14)', fg: 'var(--t2)' },
-  { key: null, icon: '🧠', title: 'Venta cruzada inteligente', desc: 'Sugiere productos complementarios y explica por qué recomendarlos.', bg: 'rgba(194,85,127,.14)', fg: 'var(--t5)' },
+  { key: 'cross-sell', icon: '🧠', title: 'Venta cruzada inteligente', desc: 'Sugiere productos complementarios y explica por qué recomendarlos.', bg: 'rgba(194,85,127,.14)', fg: 'var(--t5)' },
 ];
 
 // Proveedor activo del AI Sales Copilot — hoy, el local (sin red, sin IA).
@@ -361,28 +361,40 @@ const COMPARE_MAX_PER_TYPE = 300;
 // se dispara automáticamente al hacer clic en la tarjeta.
 let copilotBestAlt = { status: 'idle', response: null, error: null };
 
+// Estado de "Venta cruzada inteligente" (Fase 2, Paso 6). Misma forma y
+// mismo patrón de disparo automático que copilotBestAlt.
+let copilotCrossSell = { status: 'idle', response: null, error: null };
+
 function copilotSkillRowHTML(skill, idx) {
   const isExplain = skill.key === 'explain-product';
   const isCompare = skill.key === 'compare-products';
   const isBestAlt = skill.key === 'best-alternative';
+  const isCrossSell = skill.key === 'cross-sell';
 
-  const status = isExplain ? copilotExplain.status : isCompare ? copilotCompare.status : isBestAlt ? copilotBestAlt.status : 'idle';
+  const status = isExplain ? copilotExplain.status
+    : isCompare ? copilotCompare.status
+    : isBestAlt ? copilotBestAlt.status
+    : isCrossSell ? copilotCrossSell.status
+    : 'idle';
   const isOpen = (isExplain && (status === 'done' || status === 'error'))
     || (isCompare && status !== 'idle')
-    || (isBestAlt && (status === 'done' || status === 'error'));
+    || (isBestAlt && (status === 'done' || status === 'error'))
+    || (isCrossSell && (status === 'done' || status === 'error'));
 
-  const statusLabel = (!isExplain && !isCompare && !isBestAlt) ? 'Próximamente'
+  const anyKnownSkill = isExplain || isCompare || isBestAlt || isCrossSell;
+  const statusLabel = !anyKnownSkill ? 'Próximamente'
     : status === 'loading' ? 'Generando…'
     : status === 'error' ? 'No se pudo generar'
     : status === 'picking' ? 'Elige un producto'
     : 'Disponible';
-  const statusClass = (!isExplain && !isCompare && !isBestAlt) ? '' : status === 'error' ? 'is-error' : 'is-active';
+  const statusClass = !anyKnownSkill ? '' : status === 'error' ? 'is-error' : 'is-active';
 
   const rowHTML = `
     <button class="copilot-row${isOpen ? ' is-open' : ''}${status === 'loading' ? ' is-loading' : ''}" type="button"
       ${isExplain ? 'data-skill="explain-product"' : ''}
       ${isCompare ? 'data-skill="compare-products"' : ''}
       ${isBestAlt ? 'data-skill="best-alternative"' : ''}
+      ${isCrossSell ? 'data-skill="cross-sell"' : ''}
       ${status === 'loading' ? 'aria-busy="true" disabled' : ''}>
       <span class="copilot-ic" style="background:${skill.bg};color:${skill.fg}">${skill.icon}<span class="copilot-ic-n">${idx + 1}</span></span>
       <span class="copilot-row-txt">
@@ -409,6 +421,8 @@ function copilotSkillRowHTML(skill, idx) {
     extraHTML = `<div class="copilot-response-err">${esc(copilotExplain.error)}</div>`;
   } else if (isBestAlt) {
     extraHTML = bestAlternativeExtraHTML();
+  } else if (isCrossSell) {
+    extraHTML = crossSellExtraHTML();
   } else if (isCompare) {
     extraHTML = copilotCompareExtraHTML();
   }
@@ -525,6 +539,44 @@ function bestAlternativeExtraHTML() {
   return '';
 }
 
+function crossSellResponseHTML(res) {
+  const time = res.generatedAt
+    ? new Date(res.generatedAt).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' })
+    : '';
+  const header = `<div class="copilot-response-h"><span class="dot-live"></span>Venta cruzada · ${esc(res.source || 'local')} · ${time}</div>`;
+  if (!res.recomendaciones.length) {
+    return `
+      <div class="copilot-response">
+        ${header}
+        <p class="compare-none">${esc(res.mensaje)}</p>
+      </div>`;
+  }
+  const items = res.recomendaciones.map((r, i) => `
+    <div class="xsell-item">
+      <div class="xsell-item-h"><span class="xsell-rank">${i + 1}</span><span class="xsell-nm">${esc(r.nombre)}</span></div>
+      <p class="xsell-reason">${esc(r.razon)}</p>
+    </div>`).join('');
+  return `
+    <div class="copilot-response">
+      ${header}
+      <div class="xsell-list">${items}</div>
+    </div>`;
+}
+
+function crossSellExtraHTML() {
+  const st = copilotCrossSell;
+  if (st.status === 'loading') {
+    return `<div class="copilot-response-loading"><span class="dot-live"></span>Buscando productos complementarios…</div>`;
+  }
+  if (st.status === 'error') {
+    return `<div class="copilot-response-err">${esc(st.error)}</div>`;
+  }
+  if (st.status === 'done' && st.response) {
+    return crossSellResponseHTML(st.response);
+  }
+  return '';
+}
+
 function copilotPanelHTML() {
   return `
     <aside class="card copilot-panel">
@@ -552,6 +604,9 @@ function wireCopilotPanel() {
 
   const bestAltBtn = $('[data-skill="best-alternative"]');
   if (bestAltBtn) bestAltBtn.addEventListener('click', onBestAlternativeClick);
+
+  const crossSellBtn = $('[data-skill="cross-sell"]');
+  if (crossSellBtn) crossSellBtn.addEventListener('click', onCrossSellClick);
 
   const compareBtn = $('[data-skill="compare-products"]');
   if (compareBtn) compareBtn.addEventListener('click', onCompareProductsClick);
@@ -652,6 +707,40 @@ function onBestAlternativeClick() {
     });
 }
 
+function onCrossSellClick() {
+  if (copilotCrossSell.status === 'loading' || p360Current < 0) return;
+
+  copilotCrossSell = { status: 'loading', response: null, error: null };
+  refreshCopilotPanel();
+
+  // Mismo maxPerType generoso que usan "Comparar productos" y "Mejor
+  // alternativa" (COMPARE_MAX_PER_TYPE): evita que relaciones.detalle
+  // trunque antes de ver todas las relaciones elegibles para venta cruzada.
+  let context;
+  try {
+    context = ContextBuilder.build(p360Current, { maxPerType: COMPARE_MAX_PER_TYPE });
+  } catch (err) {
+    copilotCrossSell = { status: 'error', response: null, error: err.message };
+    refreshCopilotPanel();
+    return;
+  }
+  if (!context) {
+    copilotCrossSell = { status: 'error', response: null, error: 'No se pudo construir el contexto de este producto.' };
+    refreshCopilotPanel();
+    return;
+  }
+
+  ResponseProvider.get().crossSell(context)
+    .then(res => {
+      copilotCrossSell = { status: 'done', response: res, error: null };
+      refreshCopilotPanel();
+    })
+    .catch(err => {
+      copilotCrossSell = { status: 'error', response: null, error: err.message || 'Ocurrió un error buscando productos complementarios.' };
+      refreshCopilotPanel();
+    });
+}
+
 function onCompareProductsClick() {
   if (copilotCompare.status === 'loading' || p360Current < 0) return;
   copilotCompare = copilotCompare.status === 'picking'
@@ -719,6 +808,7 @@ function openProduct(i) {
   copilotExplain = { status: 'idle', text: null, source: null, generatedAt: null, error: null };
   copilotCompare = { status: 'idle', query: '', results: [], productBIndex: null, response: null, error: null };
   copilotBestAlt = { status: 'idle', response: null, error: null };
+  copilotCrossSell = { status: 'idle', response: null, error: null };
   showView('p360');
   renderP360();
 }

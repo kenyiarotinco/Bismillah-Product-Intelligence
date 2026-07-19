@@ -197,6 +197,14 @@ tbody tr.rowlink:hover{background:var(--emerald-tint)}
 .bestalt-pick{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
 .bestalt-nm{font-family:var(--ff-d);font-size:13px;font-weight:600;color:var(--ink)}
 
+/* ---------- cross sell (Fase 2, Paso 6) ---------- */
+.xsell-list{display:flex;flex-direction:column;gap:8px}
+.xsell-item{padding:9px 10px;border:1px solid var(--line);border-radius:var(--r);background:var(--paper)}
+.xsell-item-h{display:flex;align-items:center;gap:7px;margin-bottom:3px}
+.xsell-rank{flex:none;width:17px;height:17px;border-radius:50%;background:var(--t5);color:#fff;font-family:var(--ff-m);font-size:9px;font-weight:500;display:grid;place-items:center;line-height:1}
+.xsell-nm{font-family:var(--ff-d);font-size:12.5px;font-weight:600;color:var(--ink)}
+.xsell-reason{font-size:11.5px;color:var(--ink-2);line-height:1.4}
+
 /* ---------- motores ---------- */
 .engine-tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
 .engine-tabs button{padding:9px 15px;border:1px solid var(--line);border-radius:999px;background:var(--card);font-size:13px;font-weight:500;color:var(--ink-2)}

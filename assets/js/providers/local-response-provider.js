@@ -25,6 +25,13 @@
  * actual, la de mayor confianza (excluyendo Baja, misma política R-PIG-04
  * que ya aplican Panorama y Motores) y arma su justificación reutilizando
  * collectBenefits()/labelFor() — sin una segunda llamada a ContextBuilder.
+ *
+ * Fase 2, Paso 6: implementa también `crossSell(context)` — reaplica (sin
+ * duplicar su código) el mismo criterio de negocio que ya usa el motor de
+ * "Venta cruzada" en Motores (COMPLEMENTA > MISMO_BENEFICIO >
+ * MISMA_AUDIENCIA > MISMO_INGREDIENTE, ponderado por confianza, Baja
+ * excluida por defecto) sobre las relaciones que ya trae el contexto del
+ * producto actual, reutilizando labelFor() para las justificaciones.
  */
 'use strict';
 
@@ -221,6 +228,71 @@ const LocalResponseProvider = (function () {
     };
   }
 
+  // ---------- crossSell: reutiliza labelFor() ya definido arriba — ningún
+  // vocabulario nuevo. Los pesos reaplican, sin copiar su código, el mismo
+  // criterio de negocio que ya usa engineRecos() para la pestaña "Venta
+  // cruzada" del motor en Motores (app.js): COMPLEMENTA > MISMO_BENEFICIO >
+  // MISMA_AUDIENCIA > MISMO_INGREDIENTE, ponderado por confianza. Mantener
+  // este proveedor independiente de app.js (ver Paso 2/3) significa que no
+  // se puede *importar* CROSS_TYPE_W/CONF_W desde ahí — se reexpresa aquí el
+  // mismo criterio, ya validado y en producción en Motores, no uno nuevo. ----------
+
+  const CROSS_SELL_TYPE_WEIGHT = {
+    COMPLEMENTA: 3.0,
+    MISMO_BENEFICIO: 2.0,
+    MISMA_AUDIENCIA: 1.5,
+    MISMO_INGREDIENTE: 1.0,
+  };
+  const CROSS_SELL_CONF_WEIGHT = { Alta: 1.0, Media: 0.6 }; // Baja excluida — política R-PIG-04
+  const CROSS_SELL_MAX_RESULTS = 5;
+
+  function crossSellWeight(d) {
+    const typeW = CROSS_SELL_TYPE_WEIGHT[d.tipo];
+    const confW = CROSS_SELL_CONF_WEIGHT[d.confianza];
+    return typeW === undefined || confW === undefined ? null : typeW * confW;
+  }
+
+  function buildCrossSell(context) {
+    const { producto, relaciones } = context;
+    const candidatos = new Map(); // sku -> { sku, nombre, score, relaciones: [] }
+
+    for (const d of relaciones.detalle) {
+      const peso = crossSellWeight(d);
+      if (peso === null) continue;
+      if (!candidatos.has(d.sku)) candidatos.set(d.sku, { sku: d.sku, nombre: d.nombre, score: 0, relaciones: [] });
+      const c = candidatos.get(d.sku);
+      c.score += peso;
+      c.relaciones.push(d);
+    }
+
+    // Relevancia: score agregado (varias relaciones elegibles al mismo
+    // candidato se refuerzan entre sí), luego cantidad de señales distintas,
+    // luego orden alfabético — determinista, sin datos fabricados para
+    // desempatar.
+    const ordenados = [...candidatos.values()].sort((a, b) =>
+      b.score - a.score || b.relaciones.length - a.relaciones.length || a.nombre.localeCompare(b.nombre)
+    );
+    const top = ordenados.slice(0, CROSS_SELL_MAX_RESULTS);
+
+    if (!top.length) {
+      return {
+        recomendaciones: [],
+        mensaje: `No se encontraron productos complementarios elegibles para "${producto.nombre}" en el catálogo.`,
+      };
+    }
+
+    const recomendaciones = top.map(c => {
+      const relOrdenadas = [...c.relaciones].sort((a, b) => crossSellWeight(b) - crossSellWeight(a));
+      const principal = relOrdenadas[0];
+      let razon = `${labelFor(principal.tipo)} (confianza ${principal.confianza}): ${principal.justificacion}.`;
+      const otrosTipos = [...new Set(relOrdenadas.slice(1).map(r => labelFor(r.tipo)))];
+      if (otrosTipos.length) razon += ` También comparte: ${otrosTipos.join(', ')}.`;
+      return { sku: c.sku, nombre: c.nombre, razon };
+    });
+
+    return { recomendaciones, mensaje: null };
+  }
+
   function buildText(context) {
     const { producto, relaciones, comercial } = context;
     const parrafos = [];
@@ -305,5 +377,17 @@ const LocalResponseProvider = (function () {
     });
   }
 
-  return { explainProduct, compareProducts, bestAlternative };
+  function crossSell(context) {
+    if (!context || !context.producto || !context.relaciones) {
+      return Promise.reject(new Error('LocalResponseProvider.crossSell: contexto inválido o incompleto.'));
+    }
+    return Promise.resolve({
+      skill: 'cross-sell',
+      source: SOURCE,
+      generatedAt: new Date().toISOString(),
+      ...buildCrossSell(context),
+    });
+  }
+
+  return { explainProduct, compareProducts, bestAlternative, crossSell };
 })();
