@@ -1,0 +1,20 @@
+/*
+ * Template showing the exact shape expected by assets/js/app.js.
+ *
+ * This is NOT the real catalog — it's a 3-product stub so you can see the schema.
+ * To stand up the production profile locally:
+ *   1. cp -r production.example production
+ *   2. Export/derive your real master catalog into this exact shape.
+ *   3. Save it as production/data.js (the whole /production/ folder is git-ignored —
+ *      see .gitignore and README.md, "Perfiles de despliegue").
+ *
+ * Shape:
+ *   types    — relationship type labels (order defines the numeric type index used in rels)
+ *   auds     — audience labels (order defines the numeric audience index used in products)
+ *   subcats  — subcategory labels (order defines the numeric subcatIdx used in products)
+ *   products — [sku, nombre, subcatIdx, grado, tags, audienciaIdxs[]]
+ *              grado = precomputed degree (count of relations); keep it consistent with `rels`
+ *   justs    — unique justification strings, referenced by index from rels
+ *   rels     — [srcIdx, dstIdx, typeIdx, confidenceIdx(0=Alta,1=Media,2=Baja), justIdx]
+ */
+const DATA={"types":["MISMA_CATEGORIA","MISMO_BENEFICIO","MISMO_INGREDIENTE","SUSTITUYE","COMPLEMENTA","MISMA_AUDIENCIA","VARIANTE"],"auds":["Hombre","Mujer","Kids","Adulto mayor"],"subcats":["B1.1 Categoría de ejemplo"],"products":[[10001,"PRODUCTO EJEMPLO UNO FCO X 30 CAP.",0,1,"ejemplo, plantilla",[]],[10002,"PRODUCTO EJEMPLO DOS CJA X 20 TAB.",0,1,"ejemplo, plantilla",[]]],"justs":["Misma subcategoría estructural 'B1.1 Categoría de ejemplo' del Baseline v1.1"],"rels":[[0,1,0,0,0]]};

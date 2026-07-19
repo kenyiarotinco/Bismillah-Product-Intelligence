@@ -1,0 +1,32 @@
+# Real business dataset — NEVER commit this to a public repository.
+# The production profile is intentionally excluded in full; see production.example/
+# and README.md ("Perfiles de despliegue") for how to reconstruct it locally.
+/production/
+
+# Claude Code (local settings/permissions, not portable across machines)
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+
+# Dependencies (if tooling is added later)
+node_modules/
+
+# Environment
+.env
+.env.*
+
+# Temporary
+*.tmp
+*.bak
