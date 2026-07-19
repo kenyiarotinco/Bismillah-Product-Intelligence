@@ -78,6 +78,7 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin backend ni bui
 │   └── js/
 │       ├── app.js                 # Lógica de la aplicación (vistas, búsqueda, motores, canvas, orquestación del Copilot)
 │       ├── context-builder.js     # Construye el contexto de producto para el AI Sales Copilot (sin IA, sin red)
+│       ├── prompt-context-builder.js  # Transforma el Context en un PromptContext estructurado para un futuro AIResponseProvider (Fase 4) — sin consumidor todavía
 │       ├── response-provider-contract.js  # Interfaz común que debe cumplir cualquier proveedor de respuestas (Fase 4)
 │       ├── response-provider.js   # Puerto: registro del proveedor de respuestas activo del Copilot (5 habilidades)
 │       ├── commercial-data-provider.js  # Adaptador: Context Builder pide datos comerciales por SKU, sin conocer su fuente (Fase 3)
@@ -103,7 +104,8 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin backend ni bui
 │   ├── verify-best-alternative.js   # QA headless (Node) de "Mejor alternativa"
 │   ├── verify-cross-sell.js         # QA headless (Node) de "Venta cruzada inteligente"
 │   ├── verify-price-availability.js # QA headless (Node) de "Precio y disponibilidad"
-│   └── verify-ai-provider-abstraction.js # QA headless (Node) del contrato de proveedores y del placeholder de IA (Fase 4)
+│   ├── verify-ai-provider-abstraction.js # QA headless (Node) del contrato de proveedores y del placeholder de IA (Fase 4)
+│   └── verify-prompt-context-builder.js  # QA headless (Node) del Prompt Context Builder (Fase 4)
 └── docs/
     ├── PROJECT_BRIEF.md           # Objetivo, dominio, alcance y supuestos del MVP; estado de las Fases 2-4
     ├── ARCHITECTURE.md            # Arquitectura del AI Sales Copilot y de los datos comerciales (Fases 2-4)

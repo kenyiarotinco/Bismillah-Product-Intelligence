@@ -1497,3 +1497,239 @@ justificadas, exactamente igual que antes de este paso — prueba funcional
 de que el refactor del puerto no alteró el comportamiento visible del
 Copilot. Sin cambio visual en el panel; las 5 habilidades siguen
 mostrándose idénticas a como quedaron tras la Fase 3.
+
+## Prompt Context Builder (Fase 4, Paso 2)
+
+### Responsabilidad: organizar, no razonar
+
+`assets/js/prompt-context-builder.js` transforma el `Context` que ya
+produce `ContextBuilder.build()` en un `PromptContext` — la forma
+estructurada, determinística y desacoplada que un futuro
+`AIResponseProvider` recibirá para razonar. No genera texto en lenguaje
+natural, no llama a ningún modelo ni API, no decide qué proveedor usar y no
+accede a ninguna fuente de datos por su cuenta: toda la información sale,
+exclusivamente, del objeto `context` que recibe como parámetro. Nunca llama
+a `ContextBuilder` — quien orquesta la llamada (hoy nadie; en un paso
+futuro, `app.js`) sigue siendo responsable de construir el `Context` antes.
+
+```
+Context Builder → Context → Prompt Context Builder → PromptContext → (futuro) AIResponseProvider
+```
+
+### Contrato
+
+```js
+PromptContextBuilder.build(context, options?)
+// context: el objeto que devuelve ContextBuilder.build() — obligatorio, lanza si falta o está incompleto
+// options.intent: lo que el llamador considere la intención del usuario — se relaya tal cual en
+//   `userIntent`; si se omite, `userIntent` queda en `null`. Nunca se infiere.
+// devuelve: PromptContext serializable
+```
+
+Forma del objeto devuelto:
+
+```jsonc
+{
+  "schemaVersion": "1.0.0",
+  "productKnowledge": {
+    "nombre": "...",
+    "familia": "B1.1 Colágeno hidrolizado",   // producto.subcategoria — el descriptor de familia más legible, sin el diccionario de app.js
+    "beneficios": ["Piel y colágeno", "..."],  // extraídos de justificaciones MISMO_BENEFICIO
+    "ingredientes": ["Colágeno hidrolizado"],  // extraídos de justificaciones MISMO_INGREDIENTE
+    "relaciones": { "total": 229, "porTipo": [ /* igual forma que en Context */ ] },
+    "metadata": { "sku": "...", "familiaCodigo": "B1", "universoCodigo": "B", "universo": "Bienestar", "tags": [...], "audiencias": [...], "schemaVersion": "1.0.0", "generadoEn": "...", "productoIndice": 17 }
+  },
+  "commercialContext": {
+    "precio": 39.90, "precioLista": 45.00, "stock": 120, "estado": "Disponible", "disponibilidad": true
+    // o, sin cobertura comercial: todos en null salvo disponibilidad: false — nunca fabricado
+  },
+  "alternatives": [
+    { "sku": "...", "nombre": "...", "relaciones": [ { "tipo": "SUSTITUYE", "confianza": "Alta", "justificacion": "..." } ] }
+  ],
+  "crossSell": [
+    { "sku": "...", "nombre": "...", "relaciones": [ { "tipo": "COMPLEMENTA", "confianza": "Media", "justificacion": "..." }, { "tipo": "MISMO_BENEFICIO", "confianza": "Alta", "justificacion": "..." } ] }
+  ],
+  "userIntent": null   // o exactamente lo que se pasó en options.intent
+}
+```
+
+### Por qué la estructura separa `productKnowledge.relaciones` (agregado) de `alternatives`/`crossSell` (candidatos)
+
+`productKnowledge.relaciones` es el mismo resumen agregado
+(`total`/`porTipo`) que ya usa `ProductoResumen` en "Comparar productos" —
+le da al futuro modelo una noción de cuán conectado está el producto sin
+listar cada arista. `alternatives` y `crossSell`, en cambio, son listas de
+candidatos reales (otros SKUs) con sus relaciones elegibles adjuntas —
+exactamente lo que un modelo necesitaría para razonar sobre "con qué lo
+sustituyo" o "qué le ofrezco además". Mantenerlos como bloques separados
+(no anidados dentro de `relaciones`) sigue al pie de la letra la estructura
+de la especificación y evita que el mismo hecho (una arista SUSTITUYE, por
+ejemplo) tenga que interpretarse dos veces desde dos lugares distintos del
+objeto.
+
+### Por qué `alternatives`/`crossSell` agrupan por SKU en vez de listar relaciones sueltas
+
+Un mismo candidato puede estar conectado al producto actual por más de una
+relación elegible a la vez (p. ej. `COMPLEMENTA` y `MISMO_BENEFICIO`
+simultáneamente — el mismo caso ya documentado en "Venta cruzada
+inteligente", Fase 2 Paso 6). Sin agrupar, ese candidato aparecería dos
+veces en la lista — una violación directa del requisito de QA "no existen
+duplicados". Agrupar por `sku` en un `Map` (igual técnica que ya usa
+`buildCrossSell` en `local-response-provider.js`, pero sin su cálculo de
+`score`) resuelve el duplicado sin perder ningún dato: todas las relaciones
+elegibles del candidato quedan preservadas dentro de su propio
+`relaciones[]`, listas para que quien razone sobre ellas decida cuánto pesa
+cada una.
+
+### Por qué NO hay score ni ranking en `alternatives`/`crossSell`
+
+Puntuar candidatos y elegir un ganador es, precisamente, lo que ya hacen
+`bestAlternative()`/`crossSell()` en `LocalResponseProvider` — una decisión
+de **respuesta**, no de organización de contexto. La especificación de este
+paso es explícita: *"PromptContextBuilder será responsable únicamente de
+organizar la información"* y *"no debe generar respuestas"*. Por eso
+`alternatives`/`crossSell` entregan los candidatos elegibles tal cual están
+en el grafo (filtrados por política de calidad, ver abajo) sin ordenarlos
+por relevancia — ese criterio de negocio (pesos por tipo de relación,
+ponderación por confianza) sigue viviendo, sin duplicarse, únicamente en
+`LocalResponseProvider`. Un futuro `AIResponseProvider` puede razonar sobre
+`crossSell` con su propio criterio (o reaplicar el mismo) sin que este
+módulo le imponga uno.
+
+### Política R-PIG-04, reaplicada una cuarta vez
+
+`alternatives`/`crossSell` excluyen relaciones de confianza Baja por
+defecto — la misma política de calidad de dato ya vigente en Panorama,
+Motores, "Mejor alternativa" y "Venta cruzada" (Fase 2, Pasos 5 y 6). Es la
+cuarta vez que este proyecto reaplica esta política en un módulo
+independiente sin importarla desde ningún sitio: cada consumidor del grafo
+la reafirma localmente. `productKnowledge.relaciones` (el agregado), en
+cambio, sigue reportando el total real sin filtrar — igual que
+`context.relaciones` en el Context Builder — porque ahí no se trata de
+candidatos "elegibles para actuar", sino de una magnitud descriptiva.
+
+### `beneficios`/`ingredientes`: misma técnica de extracción ya validada, reaplicada sin importar el archivo
+
+`extractQuoted()` (regex sobre el texto entre comillas simples de la
+justificación) es la misma técnica que ya usa `local-response-provider.js`
+para "beneficios" desde el Paso 3 — no se pudo importar desde ahí (sus
+funciones viven en un closure privado, y ese archivo está fuera de alcance
+de este paso), así que se reaplicó de forma independiente. Antes de
+aplicarla también a "ingredientes" (`MISMO_INGREDIENTE`), se verificó el
+mismo nivel de confianza exigido para "beneficios" en su momento: el 100%
+de las 159 justificaciones únicas de tipo `MISMO_INGREDIENTE`, en el
+catálogo sintético **y** en el real, sigue el patrón *"Comparten elemento
+base 'X' (otras presentaciones del mismo ingrediente)"* — no es una
+heurística nueva sin verificar, es la misma disciplina ya aplicada dos
+veces antes (`beneficios` en el Paso 3, y de nuevo aquí).
+
+### `UserIntent`: nunca inferido
+
+`Context` no contiene ninguna noción de intención del usuario — es
+puramente conocimiento de catálogo y grafo. Por eso `userIntent` es
+exactamente lo que el llamador pasa en `options.intent`, relayado sin
+tocar; si no se pasa nada, queda en `null`. Este módulo no intenta adivinar
+qué habilidad o pregunta originó la llamada a partir del `context` — eso
+sería fabricar un dato que no existe en la fuente, la misma disciplina que
+ya rige `comercial.pendienteDe` o `relaciones.total` en el Context Builder
+(nunca inventar, declarar honestamente lo que falta o no se tiene).
+
+### Por qué `build()` lanza en vez de devolver `null` ante un contexto inválido
+
+A diferencia de `ContextBuilder.build()` (que devuelve `null` cuando el
+producto referenciado no existe — un caso de negocio esperado, no un error
+de programación), `PromptContextBuilder.build()` siempre recibe un
+`Context` que, en el flujo real, ya salió de una llamada válida a
+`ContextBuilder.build()`. Un `context` nulo o incompleto aquí solo puede
+significar un error del llamador — el mismo criterio que ya aplican los
+métodos de `LocalResponseProvider` al rechazar su Promise ante un contexto
+inválido. `PromptContextBuilder.build()` no es async (es una transformación
+pura y síncrona, sin I/O), así que la señal equivalente es lanzar de forma
+síncrona en vez de rechazar una Promise.
+
+### Fuera de alcance (deliberado, en este paso)
+
+- Sin generación de prompts en lenguaje natural — `PromptContext` es un
+  objeto estructurado, no texto.
+- Sin ningún cambio en Context Builder, `CommercialDataProvider`, el
+  pipeline comercial, `LocalResponseProvider` ni `AIResponseProvider` —
+  cero diff en los cinco.
+- Sin ninguna integración en `app.js` ni en el panel del Copilot: este
+  módulo no tiene todavía ningún consumidor real. El `<script>` se agregó a
+  las tres páginas por consistencia con `AIResponseProvider` en el Paso
+  1 (existe como global, listo para usarse, sin que nada lo invoque
+  todavía) — cero impacto de comportamiento, verificado en navegador.
+
+### QA — Prompt Context Builder
+
+`scripts/verify-prompt-context-builder.js` — mismo enfoque headless que los
+pasos anteriores: carga `data.js` + `context-builder.js` +
+`commercial-data-provider.js` + `prompt-context-builder.js` en un sandbox
+de Node, sin DOM ni red, y verifica:
+
+1. Guardrail estático sobre código ejecutable (no comentarios): cero
+   referencias a `fetch`, `XMLHttpRequest`, `document`, `window`, `gemini`,
+   `openai`, `anthropic`.
+2. El módulo no referencia `LocalResponseProvider`, `AIResponseProvider` ni
+   `ResponseProvider` en absoluto — no se acopla a ningún proveedor de
+   respuestas, verificado por inspección del código fuente.
+3. El módulo carga y expone `build()`/`SCHEMA_VERSION`.
+4. `build(context)` devuelve exactamente los 6 bloques de la
+   especificación (`schemaVersion`, `productKnowledge`, `commercialContext`,
+   `alternatives`, `crossSell`, `userIntent`) — ni de más ni de menos.
+5. `productKnowledge` tiene exactamente sus 6 sub-bloques esperados;
+   `commercialContext` tiene exactamente sus 5 campos esperados por la
+   especificación (nada de `margen`/`priceDifference`/`pendienteDe`, que
+   son detalles de implementación fuera de la forma pedida).
+6. **Ningún campo del `PromptContext` es `undefined`** — verificado con un
+   recorrido recursivo propio, no con `JSON.stringify` (que omite en
+   silencio las claves `undefined` en vez de señalarlas — una trampa que
+   habría dejado pasar el bug que este check existe para atrapar).
+7. `beneficios`/`ingredientes` citados se verifican contra las
+   justificaciones reales de ese producto — no basta con que el formato
+   "se vea bien".
+8. `alternatives`/`crossSell` nunca contienen un `sku` duplicado — cada
+   candidato aparece una sola vez, con todas sus relaciones elegibles
+   agrupadas.
+9. `alternatives`/`crossSell` nunca incluyen una relación de confianza Baja
+   (R-PIG-04 verificado dinámicamente, no solo documentado).
+10. `alternatives` contiene únicamente relaciones `SUSTITUYE`; `crossSell`
+    únicamente los 4 tipos elegibles de venta cruzada — sin mezcla entre
+    bloques.
+11. `userIntent` relaya exactamente lo que se pasa en `options.intent`, y
+    queda en `null` cuando se omite — nunca se infiere.
+12. `commercialContext` relaya fielmente tanto el caso sin cobertura
+    comercial (`disponibilidad:false`, todo en `null`) como el caso con un
+    proveedor comercial simulado (`disponibilidad:true` con los 4 campos
+    poblados).
+13. Un contexto inválido (`null`, o un objeto incompleto) lanza de forma
+    síncrona.
+14. Llamadas repetidas con el mismo `context` son puras — no acumulan
+    estado entre llamadas.
+15. **Los 1.094 productos del catálogo**, uno por uno: sin excepciones, sin
+    campos `undefined`, sin `sku` duplicado en `alternatives`/`crossSell`.
+
+Resultado: **17/17 checks OK**, verificado también manualmente contra
+`production/data.js` (1.094 productos reales, misma forma, mismo
+comportamiento, cero fallos). Se volvieron a correr las 8 suites
+anteriores en el mismo momento — `scripts/verify-context-builder.js`
+(**10/10**), `scripts/verify-commercial-data.js` (**8/8**),
+`scripts/verify-response-provider.js` (**9/9**),
+`scripts/verify-compare-products.js` (**10/10**),
+`scripts/verify-best-alternative.js` (**10/10**),
+`scripts/verify-cross-sell.js` (**10/10**),
+`scripts/verify-price-availability.js` (**12/12**) y
+`scripts/verify-ai-provider-abstraction.js` (**10/10**) — cero regresión
+sobre las Fases 2, 3 y 4 · Paso 1. Ninguna de las ocho suites necesitó
+ningún ajuste: este módulo no introduce ninguna dependencia nueva en
+ningún archivo existente.
+
+Verificación adicional en navegador (perfil demo): sin errores de consola;
+`typeof PromptContextBuilder === 'object'` tras la carga;
+`PromptContextBuilder.build(ContextBuilder.build(52, {maxPerType:300}), {intent:{skill:'cross-sell'}})`
+devuelve la estructura completa esperada en consola. Flujo completo
+probado en Producto 360: "Venta cruzada inteligente" (habilidad 5) sigue
+generando recomendaciones reales exactamente igual que antes de este paso
+— prueba funcional de que agregar el módulo (sin conectarlo a nada) no
+alteró el comportamiento visible del Copilot. Sin cambio visual en el
+panel.
