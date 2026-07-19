@@ -193,6 +193,10 @@ tbody tr.rowlink:hover{background:var(--emerald-tint)}
 .compare-restart{width:100%;margin-top:12px;padding:9px;font-size:12px;font-weight:500;color:var(--indigo);border:1px dashed var(--line);border-radius:var(--r)}
 .compare-restart:hover{background:var(--indigo-tint);border-color:var(--indigo)}
 
+/* ---------- best alternative (Fase 2, Paso 5) ---------- */
+.bestalt-pick{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.bestalt-nm{font-family:var(--ff-d);font-size:13px;font-weight:600;color:var(--ink)}
+
 /* ---------- motores ---------- */
 .engine-tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
 .engine-tabs button{padding:9px 15px;border:1px solid var(--line);border-radius:999px;background:var(--card);font-size:13px;font-weight:500;color:var(--ink-2)}

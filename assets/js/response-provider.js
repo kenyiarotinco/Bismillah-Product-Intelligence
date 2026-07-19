@@ -1,4 +1,4 @@
-/* Bismillah Product Intelligence Platform — Response Provider (Fase 2, Pasos 3-4)
+/* Bismillah Product Intelligence Platform — Response Provider (Fase 2, Pasos 3-5)
  *
  * Puerto/contrato que desacopla al AI Sales Copilot de CÓMO se generan sus
  * respuestas. Cualquier proveedor —el local de hoy, o más adelante Google
@@ -28,6 +28,17 @@
  *   //   etiquetas[], relaciones:{total, porTipo} } — ver
  *   // providers/local-response-provider.js para el detalle exacto.
  *
+ *   bestAlternative(context) => Promise<{
+ *     skill: 'best-alternative',
+ *     source: string,
+ *     generatedAt: string,
+ *     encontrado: boolean,
+ *     alternativa: { sku: string, nombre: string } | null,
+ *     afinidad: 'Alta' | 'Media' | null,   // confianza de la relación SUSTITUYE elegida
+ *     justificacion: string | null,        // texto listo para mostrar
+ *     mensaje: string | null,              // presente solo si encontrado === false
+ *   }>
+ *
  * `context`/`contextA`/`contextB` son exactamente los objetos que devuelve
  * ContextBuilder.build() — ningún proveedor recibe ni el DOM, ni el índice
  * del producto, ni nada de app.js.
@@ -39,15 +50,15 @@
  * una línea del código que lo invoca — solo cambia cuánto tarda en
  * resolverse la misma Promise que ya se estaba esperando.
  *
- * Habilidades futuras (Precio y disponibilidad, Mejor alternativa, Venta
- * cruzada) se añadirán a este mismo contrato como nuevos métodos cuando se
- * aprueben sus propios pasos — no antes, para no comprometerse hoy con una
- * forma que todavía no se ha diseñado.
+ * Habilidades futuras (Precio y disponibilidad, Venta cruzada) se añadirán a
+ * este mismo contrato como nuevos métodos cuando se aprueben sus propios
+ * pasos — no antes, para no comprometerse hoy con una forma que todavía no
+ * se ha diseñado.
  */
 'use strict';
 
 const ResponseProvider = (function () {
-  const REQUIRED_METHODS = ['explainProduct', 'compareProducts'];
+  const REQUIRED_METHODS = ['explainProduct', 'compareProducts', 'bestAlternative'];
   let active = null;
 
   function assertShape(provider) {

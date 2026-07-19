@@ -19,6 +19,12 @@
  * ya entrega ContextBuilder para cada producto — y reutilizando (no
  * duplicando) el vocabulario y la extracción de beneficios ya definidos más
  * abajo para explainProduct().
+ *
+ * Fase 2, Paso 5: implementa también `bestAlternative(context)` — encuentra,
+ * dentro de las relaciones SUSTITUYE que ya trae el contexto del producto
+ * actual, la de mayor confianza (excluyendo Baja, misma política R-PIG-04
+ * que ya aplican Panorama y Motores) y arma su justificación reutilizando
+ * collectBenefits()/labelFor() — sin una segunda llamada a ContextBuilder.
  */
 'use strict';
 
@@ -164,6 +170,57 @@ const LocalResponseProvider = (function () {
     return { productos: { a, b }, similitudes, diferencias };
   }
 
+  // ---------- bestAlternative: reutiliza collectBenefits() ya definido
+  // arriba para explainProduct() — ninguna técnica de extracción nueva. ----------
+
+  // relaciones.detalle ya llega ordenado con confianza Alta antes que Media
+  // antes que Baja (ver ContextBuilder.buildDetail, docs/ARCHITECTURE.md
+  // Paso 2) — filtrar SUSTITUYE y excluir Baja (política R-PIG-04, la misma
+  // que ya aplican Panorama y el motor de "Sustitución" en Motores) y tomar
+  // el primero da directamente el candidato de mayor confianza disponible,
+  // sin necesidad de reordenar nada aquí.
+  function pickBestSubstitute(detalle) {
+    return detalle.find(d => d.tipo === 'SUSTITUYE' && d.confianza !== 'Baja') || null;
+  }
+
+  function buildBestAlternative(context) {
+    const { producto, relaciones } = context;
+    const mejor = pickBestSubstitute(relaciones.detalle);
+
+    if (!mejor) {
+      return {
+        encontrado: false,
+        alternativa: null,
+        afinidad: null,
+        justificacion: null,
+        mensaje: `No se encontró un sustituto con confianza suficiente para "${producto.nombre}" en el catálogo.`,
+      };
+    }
+
+    const razones = [];
+    razones.push(
+      `"${mejor.nombre}" fue identificado como el mejor sustituto de "${producto.nombre}" (confianza ${mejor.confianza}): ${mejor.justificacion}.`
+    );
+    if (producto.subcategoria) {
+      razones.push(`"${producto.nombre}" pertenece a la subcategoría "${producto.subcategoria}".`);
+    }
+    const beneficios = collectBenefits(relaciones.detalle);
+    if (beneficios.length) {
+      razones.push(`Beneficios que "${producto.nombre}" aporta en el catálogo: ${beneficios.join(', ')}.`);
+    }
+    if (producto.tags.length) {
+      razones.push(`Etiquetas de "${producto.nombre}": ${producto.tags.join(', ')}.`);
+    }
+
+    return {
+      encontrado: true,
+      alternativa: { sku: mejor.sku, nombre: mejor.nombre },
+      afinidad: mejor.confianza,
+      justificacion: razones.join('\n\n'),
+      mensaje: null,
+    };
+  }
+
   function buildText(context) {
     const { producto, relaciones, comercial } = context;
     const parrafos = [];
@@ -236,5 +293,17 @@ const LocalResponseProvider = (function () {
     });
   }
 
-  return { explainProduct, compareProducts };
+  function bestAlternative(context) {
+    if (!context || !context.producto || !context.relaciones) {
+      return Promise.reject(new Error('LocalResponseProvider.bestAlternative: contexto inválido o incompleto.'));
+    }
+    return Promise.resolve({
+      skill: 'best-alternative',
+      source: SOURCE,
+      generatedAt: new Date().toISOString(),
+      ...buildBestAlternative(context),
+    });
+  }
+
+  return { explainProduct, compareProducts, bestAlternative };
 })();

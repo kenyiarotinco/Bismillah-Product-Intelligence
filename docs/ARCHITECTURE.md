@@ -8,9 +8,10 @@ Usuario → AI Sales Copilot (panel, app.js) → Context Builder → Response Pr
 ```
 
 - **Context Builder** (Paso 2): construye el contexto de un producto.
-- **Response Provider** (Pasos 3-4): a partir de uno o más contextos, genera
+- **Response Provider** (Pasos 3-5): a partir de uno o más contextos, genera
   la respuesta de una habilidad concreta del Copilot — hoy, "Explicar
-  producto" (Paso 3) y "Comparar productos" (Paso 4).
+  producto" (Paso 3), "Comparar productos" (Paso 4) y "Mejor alternativa"
+  (Paso 5).
 
 ## Context Builder (Fase 2, Paso 2)
 
@@ -182,7 +183,7 @@ Verificación adicional en navegador: `index.html` con el nuevo
 `ContextBuilder` disponible en consola, Producto 360 y el panel AI Sales
 Copilot se renderizan igual que antes de este paso, sin errores de consola.
 
-## Response Provider (Fase 2, Pasos 3-4)
+## Response Provider (Fase 2, Pasos 3-5)
 
 ### Responsabilidad
 
@@ -228,9 +229,10 @@ qué opciones, cuándo se le pasa el resultado a `ResponseProvider`, y qué
 hacer con la respuesta (mostrarla, mostrar un error, mostrar "cargando").
 Esa pieza es UI por definición — vive en `app.js`, junto al resto del panel
 del Copilot (`copilotPanelHTML()`, `wireCopilotPanel()`,
-`onExplainProductClick()`, y desde el Paso 4 también
+`onExplainProductClick()`, desde el Paso 4 también
 `onCompareProductsClick()` / `onCompareSearchInput()` /
-`onCompareProductBSelected()`). No se extrajo a un archivo aparte porque, a
+`onCompareProductBSelected()`, y desde el Paso 5 también
+`onBestAlternativeClick()`). No se extrajo a un archivo aparte porque, a
 diferencia de Context Builder y Response Provider, esta pieza SÍ necesita el
 DOM y el estado de Producto 360 (`p360Current`) — no hay nada que ganar
 desacoplándola, y el proyecto no usa un framework de componentes que
@@ -248,7 +250,7 @@ modificar Producto 360".
 
 ```js
 // response-provider.js — el puerto
-ResponseProvider.use(provider)   // registra el proveedor activo; valida que implemente explainProduct() y compareProducts()
+ResponseProvider.use(provider)   // registra el proveedor activo; valida que implemente explainProduct(), compareProducts() y bestAlternative()
 ResponseProvider.get()           // devuelve el proveedor activo; lanza si no hay ninguno
 ResponseProvider.isReady()       // true/false
 
@@ -270,6 +272,17 @@ provider.compareProducts(contextA, contextB) => Promise<{
 }>
 // ProductoResumen: { sku, nombre, universo, categoria, beneficios[],
 //   etiquetas[], relaciones: {total, porTipo} }
+
+provider.bestAlternative(context) => Promise<{
+  skill: 'best-alternative',
+  source: string,
+  generatedAt: string,
+  encontrado: boolean,
+  alternativa: { sku: string, nombre: string } | null,
+  afinidad: 'Alta' | 'Media' | null,
+  justificacion: string | null,
+  mensaje: string | null,   // presente solo si encontrado === false
+}>
 ```
 
 `context` es exactamente lo que devuelve `ContextBuilder.build()` — ningún
@@ -359,12 +372,12 @@ la respuesta que el Copilot ya generó. Se verificó manualmente en navegador.
 
 ### Fuera de alcance (deliberado, en el Paso 3)
 
-- Las otras tres habilidades restantes (Precio y disponibilidad, Mejor
-  alternativa, Venta cruzada inteligente) siguen en "Próximamente", sin
-  `data-skill` ni listener — el contrato de `ResponseProvider` solo exigía
-  `explainProduct` en este paso; se amplió con `compareProducts` en el
-  Paso 4 (ver más abajo) y seguirá creciendo método por método cuando cada
-  habilidad tenga su propia especificación aprobada.
+- Las otras dos habilidades restantes (Precio y disponibilidad, Venta
+  cruzada inteligente) siguen en "Próximamente", sin `data-skill` ni
+  listener — el contrato de `ResponseProvider` solo exigía `explainProduct`
+  en este paso; se amplió con `compareProducts` en el Paso 4 y con
+  `bestAlternative` en el Paso 5 (ver más abajo), y seguirá creciendo método
+  por método cuando cada habilidad tenga su propia especificación aprobada.
 - No hay proveedor Gemini, ni configuración de API key, ni ningún código de
   red — ver la sección anterior sobre qué queda pendiente para ese paso.
 - No hay caché de respuestas entre productos ni entre sesiones: cada clic
@@ -576,3 +589,154 @@ reinicia ambas habilidades. Responsive (375 px) verificado con una
 comparación completa visible. Sin errores de consola en ningún caso.
 Habilidades 3–5 permanecen visualmente idénticas a como quedaron aprobadas
 en el Paso 1.
+
+## Mejor alternativa (Fase 2, Paso 5)
+
+### Por qué usa un solo contexto (no dos, a diferencia de Comparar productos)
+
+A diferencia de "Comparar productos", que necesita el contexto de dos
+productos elegidos independientemente por el usuario, "Mejor alternativa"
+solo necesita el contexto del producto que ya está abierto en Producto 360:
+el candidato a sustituto y su justificación **ya vienen incluidos** en ese
+mismo contexto, dentro de `relaciones.detalle` (las entradas con
+`tipo === 'SUSTITUYE'` traen `sku`, `nombre`, `confianza` y `justificacion`
+del candidato). No hace falta una segunda llamada a `ContextBuilder.build()`
+para saber cuál es el mejor sustituto ni por qué — el grafo ya lo dice.
+
+Esto también respeta al pie de la letra la Technical Specification de este
+paso ("reutilizando Context Builder para obtener el contexto del producto
+actual", en singular) y evita reabrir la tensión que sí existe en Comparar
+Productos entre "quién construye contextos" (la orquestación en `app.js`) y
+"quién decide cuál es el mejor candidato" (el proveedor): aquí no hace falta
+resolver esa tensión porque no hay un segundo contexto que construir.
+
+### Flujo, calcado de "Explicar producto" (no de "Comparar productos")
+
+La UI Specification pide que la respuesta se obtenga *automáticamente* al
+hacer clic en la tarjeta, sin pasos intermedios — a diferencia de "Comparar
+productos", que necesita que el usuario elija un segundo producto. Por eso
+`onBestAlternativeClick()` reutiliza exactamente la forma de
+`onExplainProductClick()` (clic → `loading` → un único
+`ContextBuilder.build()` → `ResponseProvider.get().bestAlternative(context)`
+→ `done`/`error`) y no la de `onCompareProductsClick()` (que necesita un
+estado `picking` intermedio con buscador). Mismo patrón que ya existía,
+aplicado a la habilidad que realmente lo necesita — no se inventó nada
+nuevo.
+
+### Cómo se elige "el mejor" sustituto, y por qué eso no es una nueva heurística
+
+`relaciones.detalle` ya llega ordenado con confianza Alta antes que Media
+antes que Baja (`ContextBuilder.buildDetail`, Paso 2). `bestAlternative`
+filtra las entradas `SUSTITUYE` excluyendo confianza Baja y toma la
+primera — que, por ese orden ya garantizado, es la de mayor confianza
+disponible. Excluir Baja no es una regla inventada para este paso: es la
+política R-PIG-04 (*"aristas de confianza Baja quedan fuera de los motores
+por defecto"*) que el proyecto ya aplica en Panorama y en el motor de
+"Sustitución" de Motores — aplicarla aquí es consistencia con una decisión
+de negocio ya tomada, no una heurística nueva. `app.js` pide el contexto con
+`COMPARE_MAX_PER_TYPE` (el mismo valor ya usado por Comparar Productos, no
+uno nuevo) para asegurarse de ver todas las relaciones SUSTITUYE del
+producto, no solo una muestra recortada.
+
+Si el único/los únicos candidatos son de confianza Baja, o no hay ninguna
+relación SUSTITUYE, `bestAlternative` no fuerza una recomendación débil:
+devuelve `encontrado: false` con un mensaje honesto — el mismo principio ya
+aplicado en "Comparar productos" cuando dos productos no comparten nada
+("Sin hallazgos en esta categoría").
+
+### De dónde sale cada parte de la justificación
+
+Todo proviene del contexto del producto actual, sin inventar nada:
+
+- **Candidato, afinidad y motivo base**: `sku`/`nombre`/`confianza`/
+  `justificacion` de la entrada `SUSTITUYE` elegida — texto real del
+  catálogo (p. ej. *"Equivalentes genéricos (EQ-018 Levotiroxina 100MG);
+  distinto laboratorio"*).
+- **Categoría**: `producto.subcategoria` del producto actual.
+- **Beneficios**: `collectBenefits(relaciones.detalle)` — la misma función
+  que ya usa `explainProduct`, sin duplicarla.
+- **Etiquetas**: `producto.tags` del producto actual.
+- **"Nivel de afinidad"** (UI Specification): es literalmente el campo
+  `confianza` de la relación SUSTITUYE elegida (`Alta` o `Media`) — el
+  mismo concepto de confianza que ya se usa en todo el resto de la
+  aplicación, sin inventar una escala nueva.
+
+*Nota de alcance:* la justificación se basa en los datos del producto
+**actual**, no en una comparación bilateral con los propios beneficios/
+etiquetas del candidato (eso habría requerido un segundo
+`ContextBuilder.build()`, la ruta que se descartó — ver arriba). El texto
+real de la relación SUSTITUYE (p. ej. *"mismo ingrediente... misma
+subcategoría, laboratorio alternativo"*) ya suele cubrir esa comparación de
+forma implícita. Si en un paso futuro se pide una comparación explícita
+candidato-vs-producto, el patrón de dos contextos de "Comparar productos"
+ya está disponible para reutilizar.
+
+### Reutilización de UI: el chip de afinidad no necesitó CSS nuevo
+
+"Mostrar el nivel de afinidad" se renderiza con la misma clase `.chip
+.conf0/.conf1` que ya usan las relaciones de Producto 360 y de "Comparar
+productos" — resuelta con `CONF_META`, el mismo diccionario que ya existe
+en `app.js` para esa taxonomía de confianza. El único CSS nuevo de este
+paso son dos reglas (`.bestalt-pick`, `.bestalt-nm`) para el layout del
+nombre del candidato; el indicador de confianza en sí es 100 % Design
+System existente.
+
+### Fuera de alcance (deliberado, en el Paso 5)
+
+- Sin comparación bilateral candidato-vs-producto (ver nota de alcance
+  arriba).
+- Sin Venta cruzada (explícitamente fuera de alcance en la especificación
+  de este paso) ni Precio/Stock/Margen/Estado.
+- Sin desempate adicional entre dos candidatos de la misma confianza más
+  allá del orden que ya entrega `ContextBuilder` — no había una señal real
+  adicional disponible sin fabricar un criterio.
+
+### QA — Mejor alternativa
+
+`scripts/verify-best-alternative.js` — mismo enfoque headless que los pasos
+anteriores: carga `data.js` + `context-builder.js` + `response-provider.js`
++ `providers/local-response-provider.js` en un sandbox de Node, sin DOM ni
+red, y verifica:
+
+1. Guardrail estático sobre código ejecutable (no comentarios): cero
+   referencias a `fetch`, `XMLHttpRequest`, `document`, `window`, `gemini`,
+   `openai`, `anthropic`.
+2. `ResponseProvider.use()` ahora exige **también** `bestAlternative` — un
+   proveedor sin ese método es rechazado.
+3. Un producto sin relaciones `SUSTITUYE` (verificado con un índice real del
+   catálogo) devuelve `encontrado: false` con mensaje honesto.
+4. Un producto cuyos únicos sustitutos son de confianza Baja también
+   devuelve `encontrado: false` (política R-PIG-04 verificada, no solo
+   documentada).
+5. Un producto con un sustituto de confianza Alta lo recomienda con
+   `afinidad: 'Alta'`, y el `sku` recomendado corresponde exactamente a esa
+   relación real (no a otra).
+6. Un producto con sustitutos solo de confianza Media (sin ninguno Alta)
+   lo recomienda con `afinidad: 'Media'`.
+7. La justificación menciona la subcategoría y las etiquetas reales del
+   producto cuando existen — no texto genérico.
+8. Un contexto inválido (`null`) rechaza la Promise en vez de lanzar de
+   forma síncrona.
+9. `explainProduct` y `compareProducts` siguen funcionando exactamente
+   igual tras ampliar el contrato con `bestAlternative`.
+10. **Los 1.094 productos del catálogo**, uno por uno: nunca se recomienda
+    un sustituto de confianza Baja, nunca se devuelve una alternativa sin
+    `sku`, y nunca hay inconsistencia entre `encontrado` y los campos
+    `alternativa`/`afinidad`.
+
+Resultado: **10/10 checks OK**. Se volvieron a correr
+`scripts/verify-context-builder.js` (**10/10**),
+`scripts/verify-response-provider.js` (**9/9**) y
+`scripts/verify-compare-products.js` (**10/10**) en el mismo momento — cero
+regresión sobre los Pasos 2, 3 y 4.
+
+Verificación adicional en navegador: producto Farma con un sustituto de
+confianza Alta (chip "Afinidad Alta" en verde, justificación completa con
+subcategoría/beneficios/etiquetas reales) y producto sin ningún sustituto
+elegible (mensaje honesto, sin forzar una recomendación). "Explicar
+producto" y "Mejor alternativa" verificados funcionando en paralelo sin
+interferencia de estado. Cambiar de producto reinicia las tres habilidades.
+Responsive (375 px) verificado con una recomendación de confianza Media
+visible, chip ámbar renderizado correctamente. Sin errores de consola en
+ningún caso. Habilidades 3 y 5 permanecen visualmente idénticas a como
+quedaron aprobadas en el Paso 1.

@@ -322,7 +322,7 @@ const COPILOT_SKILLS = [
   { key: 'explain-product', icon: '🤖', title: 'Explicar producto', desc: 'Explica beneficios, usos y público objetivo.', bg: 'var(--emerald-tint)', fg: 'var(--emerald-dk)' },
   { key: 'compare-products', icon: '⚖️', title: 'Comparar productos', desc: 'Compara dos productos comercialmente.', bg: 'var(--indigo-tint)', fg: 'var(--indigo)' },
   { key: null, icon: '💰', title: 'Precio y disponibilidad', desc: 'Consulta precio, stock y estado.', bg: 'var(--amber-tint)', fg: '#8A5A14' },
-  { key: null, icon: '💲', title: 'Mejor alternativa', desc: 'Encuentra el mejor sustituto.', bg: 'rgba(122,95,191,.14)', fg: 'var(--t2)' },
+  { key: 'best-alternative', icon: '💲', title: 'Mejor alternativa', desc: 'Encuentra el mejor sustituto.', bg: 'rgba(122,95,191,.14)', fg: 'var(--t2)' },
   { key: null, icon: '🧠', title: 'Venta cruzada inteligente', desc: 'Sugiere productos complementarios y explica por qué recomendarlos.', bg: 'rgba(194,85,127,.14)', fg: 'var(--t5)' },
 ];
 
@@ -351,27 +351,38 @@ let copilotCompare = { status: 'idle', query: '', results: [], productBIndex: nu
 // que el grado máximo conocido del catálogo (229 — ver docs/PROJECT_BRIEF.md),
 // para que `relaciones.detalle` no trunque antes de encontrar una posible
 // relación directa con el Producto B elegido. Ver findDirectRelation() en
-// providers/local-response-provider.js.
+// providers/local-response-provider.js. Se reutiliza también en "Mejor
+// alternativa" (Paso 5) por el mismo motivo: no truncar las relaciones
+// SUSTITUYE del producto antes de elegir la de mayor confianza.
 const COMPARE_MAX_PER_TYPE = 300;
+
+// Estado de "Mejor alternativa" (Fase 2, Paso 5). Mismo patrón que
+// copilotExplain: una sola llamada, sin selección adicional del usuario —
+// se dispara automáticamente al hacer clic en la tarjeta.
+let copilotBestAlt = { status: 'idle', response: null, error: null };
 
 function copilotSkillRowHTML(skill, idx) {
   const isExplain = skill.key === 'explain-product';
   const isCompare = skill.key === 'compare-products';
+  const isBestAlt = skill.key === 'best-alternative';
 
-  const status = isExplain ? copilotExplain.status : isCompare ? copilotCompare.status : 'idle';
-  const isOpen = (isExplain && (status === 'done' || status === 'error')) || (isCompare && status !== 'idle');
+  const status = isExplain ? copilotExplain.status : isCompare ? copilotCompare.status : isBestAlt ? copilotBestAlt.status : 'idle';
+  const isOpen = (isExplain && (status === 'done' || status === 'error'))
+    || (isCompare && status !== 'idle')
+    || (isBestAlt && (status === 'done' || status === 'error'));
 
-  const statusLabel = (!isExplain && !isCompare) ? 'Próximamente'
+  const statusLabel = (!isExplain && !isCompare && !isBestAlt) ? 'Próximamente'
     : status === 'loading' ? 'Generando…'
     : status === 'error' ? 'No se pudo generar'
     : status === 'picking' ? 'Elige un producto'
     : 'Disponible';
-  const statusClass = (!isExplain && !isCompare) ? '' : status === 'error' ? 'is-error' : 'is-active';
+  const statusClass = (!isExplain && !isCompare && !isBestAlt) ? '' : status === 'error' ? 'is-error' : 'is-active';
 
   const rowHTML = `
     <button class="copilot-row${isOpen ? ' is-open' : ''}${status === 'loading' ? ' is-loading' : ''}" type="button"
       ${isExplain ? 'data-skill="explain-product"' : ''}
       ${isCompare ? 'data-skill="compare-products"' : ''}
+      ${isBestAlt ? 'data-skill="best-alternative"' : ''}
       ${status === 'loading' ? 'aria-busy="true" disabled' : ''}>
       <span class="copilot-ic" style="background:${skill.bg};color:${skill.fg}">${skill.icon}<span class="copilot-ic-n">${idx + 1}</span></span>
       <span class="copilot-row-txt">
@@ -396,6 +407,8 @@ function copilotSkillRowHTML(skill, idx) {
       </div>`;
   } else if (isExplain && status === 'error') {
     extraHTML = `<div class="copilot-response-err">${esc(copilotExplain.error)}</div>`;
+  } else if (isBestAlt) {
+    extraHTML = bestAlternativeExtraHTML();
   } else if (isCompare) {
     extraHTML = copilotCompareExtraHTML();
   }
@@ -471,6 +484,47 @@ function copilotCompareExtraHTML() {
   return '';
 }
 
+function bestAlternativeResponseHTML(res) {
+  const time = res.generatedAt
+    ? new Date(res.generatedAt).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' })
+    : '';
+  const header = `<div class="copilot-response-h"><span class="dot-live"></span>Mejor alternativa · ${esc(res.source || 'local')} · ${time}</div>`;
+  if (!res.encontrado) {
+    return `
+      <div class="copilot-response">
+        ${header}
+        <p class="compare-none">${esc(res.mensaje)}</p>
+      </div>`;
+  }
+  // Reutiliza CONF_META (mismo diccionario que usan las relaciones de
+  // Producto 360) para el chip de afinidad — misma clase .chip.confN del
+  // Design System, sin CSS nuevo para este indicador.
+  const confMeta = CONF_META.find(c => c.label === res.afinidad);
+  return `
+    <div class="copilot-response">
+      ${header}
+      <div class="bestalt-pick">
+        <span class="bestalt-nm">${esc(res.alternativa.nombre)}</span>
+        <span class="chip ${confMeta ? confMeta.cls : ''}">Afinidad ${esc(res.afinidad)}</span>
+      </div>
+      ${esc(res.justificacion)}
+    </div>`;
+}
+
+function bestAlternativeExtraHTML() {
+  const st = copilotBestAlt;
+  if (st.status === 'loading') {
+    return `<div class="copilot-response-loading"><span class="dot-live"></span>Buscando la mejor alternativa…</div>`;
+  }
+  if (st.status === 'error') {
+    return `<div class="copilot-response-err">${esc(st.error)}</div>`;
+  }
+  if (st.status === 'done' && st.response) {
+    return bestAlternativeResponseHTML(st.response);
+  }
+  return '';
+}
+
 function copilotPanelHTML() {
   return `
     <aside class="card copilot-panel">
@@ -495,6 +549,9 @@ function copilotPanelHTML() {
 function wireCopilotPanel() {
   const explainBtn = $('[data-skill="explain-product"]');
   if (explainBtn) explainBtn.addEventListener('click', onExplainProductClick);
+
+  const bestAltBtn = $('[data-skill="best-alternative"]');
+  if (bestAltBtn) bestAltBtn.addEventListener('click', onBestAlternativeClick);
 
   const compareBtn = $('[data-skill="compare-products"]');
   if (compareBtn) compareBtn.addEventListener('click', onCompareProductsClick);
@@ -557,6 +614,40 @@ function onExplainProductClick() {
     })
     .catch(err => {
       copilotExplain = { status: 'error', text: null, source: null, generatedAt: null, error: err.message || 'Ocurrió un error generando la respuesta.' };
+      refreshCopilotPanel();
+    });
+}
+
+function onBestAlternativeClick() {
+  if (copilotBestAlt.status === 'loading' || p360Current < 0) return;
+
+  copilotBestAlt = { status: 'loading', response: null, error: null };
+  refreshCopilotPanel();
+
+  // Mismo maxPerType generoso que usa "Comparar productos" (COMPARE_MAX_PER_TYPE):
+  // evita que relaciones.detalle trunque antes de llegar a la relación
+  // SUSTITUYE de mayor confianza del producto.
+  let context;
+  try {
+    context = ContextBuilder.build(p360Current, { maxPerType: COMPARE_MAX_PER_TYPE });
+  } catch (err) {
+    copilotBestAlt = { status: 'error', response: null, error: err.message };
+    refreshCopilotPanel();
+    return;
+  }
+  if (!context) {
+    copilotBestAlt = { status: 'error', response: null, error: 'No se pudo construir el contexto de este producto.' };
+    refreshCopilotPanel();
+    return;
+  }
+
+  ResponseProvider.get().bestAlternative(context)
+    .then(res => {
+      copilotBestAlt = { status: 'done', response: res, error: null };
+      refreshCopilotPanel();
+    })
+    .catch(err => {
+      copilotBestAlt = { status: 'error', response: null, error: err.message || 'Ocurrió un error buscando la mejor alternativa.' };
       refreshCopilotPanel();
     });
 }
@@ -627,6 +718,7 @@ function openProduct(i) {
   p360Expanded.clear();
   copilotExplain = { status: 'idle', text: null, source: null, generatedAt: null, error: null };
   copilotCompare = { status: 'idle', query: '', results: [], productBIndex: null, response: null, error: null };
+  copilotBestAlt = { status: 'idle', response: null, error: null };
   showView('p360');
   renderP360();
 }
