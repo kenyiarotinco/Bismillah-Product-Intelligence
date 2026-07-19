@@ -86,7 +86,7 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin build step. La
 │       ├── providers/
 │       │   ├── local-response-provider.js  # Proveedor local (sin IA, sin red) — las 5 habilidades del Copilot, activo hoy
 │       │   ├── remote-response-provider.js # Proveedor remoto (Fase 4) — usa PromptContextBuilder, gobernado por feature flag, fallback automático a Local ante cualquier error
-│       │   └── ai-response-provider.js     # Placeholder de proveedor de IA (Fase 4) — cumple el contrato, rechaza toda llamada, inactivo
+│       │   └── ai-response-provider.js     # Proveedor de IA (Gemini) — delegado puro hacia remote-response-provider.js (Fase 5); cumple el contrato, inactivo en app.js
 │       └── data.js                # Dataset SINTÉTICO — es el dato por defecto del repo, versionado
 ├── production/                    # Perfil real — IGNORADO POR GIT (no existe en el repo clonado)
 │   ├── index.html
@@ -110,7 +110,8 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin build step. La
 │   ├── verify-best-alternative.js   # QA headless (Node) de "Mejor alternativa"
 │   ├── verify-cross-sell.js         # QA headless (Node) de "Venta cruzada inteligente"
 │   ├── verify-price-availability.js # QA headless (Node) de "Precio y disponibilidad"
-│   ├── verify-ai-provider-abstraction.js # QA headless (Node) del contrato de proveedores y del placeholder de IA (Fase 4)
+│   ├── verify-ai-provider-abstraction.js # QA headless (Node) del contrato común de proveedores (Fase 4)
+│   ├── verify-ai-response-provider.js    # QA headless (Node) del AIResponseProvider real: delegación, Gemini exitoso y los 6 modos de fallback (Fase 5)
 │   ├── verify-prompt-context-builder.js  # QA headless (Node) del Prompt Context Builder (Fase 4)
 │   ├── verify-remote-response-provider.js # QA headless (Node) del Remote Response Provider: integración, fallback, timeout y flag desactivado (Fase 4)
 │   ├── verify-gemini-proxy-server.js      # QA headless (Node) del Gemini Proxy Server: servidor HTTP real, grounding y end-to-end con las 5 habilidades (Fase 4)
@@ -118,8 +119,8 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin build step. La
 │   ├── manual-gemini-live-check.js        # Validación MANUAL (fuera de la regresión) contra la API real de Gemini — ver docs/GEMINI_MANUAL_VALIDATION.md (Fase 4)
 │   └── verify-manual-gemini-check-safeguards.js # QA headless (Node) de las salvaguardas del script manual (nunca llama a la red sin key+flag) (Fase 4)
 └── docs/
-    ├── PROJECT_BRIEF.md           # Objetivo, dominio, alcance y supuestos del MVP; estado de las Fases 2-4
-    ├── ARCHITECTURE.md            # Arquitectura del AI Sales Copilot y de los datos comerciales (Fases 2-4)
+    ├── PROJECT_BRIEF.md           # Objetivo, dominio, alcance y supuestos del MVP; estado de las Fases 2-5
+    ├── ARCHITECTURE.md            # Arquitectura del AI Sales Copilot y de los datos comerciales (Fases 2-5)
     ├── GEMINI_MANUAL_VALIDATION.md # Guía paso a paso para validar la integración contra la API real de Gemini (Fase 4)
     └── QUALITY_REPORT.md          # Resultados de verificación por categoría
 ```

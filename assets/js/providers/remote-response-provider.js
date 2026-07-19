@@ -1,12 +1,14 @@
 /* Bismillah Product Intelligence Platform — Remote Response Provider (Fase 4, Pasos 3-4)
  *
  * Primer consumidor real de PromptContextBuilder: cumple exactamente el
- * mismo ResponseProviderContract que LocalResponseProvider y AIResponseProvider
- * (verificado dinámicamente en QA), pero para cada habilidad transforma el
- * `context` con `PromptContextBuilder.build()` y lo envía por HTTP a un
- * endpoint configurable — en vez de sintetizar la respuesta por reglas
- * locales, como hace LocalResponseProvider, o rechazar siempre, como hace
- * AIResponseProvider hoy.
+ * mismo ResponseProviderContract que LocalResponseProvider (verificado
+ * dinámicamente en QA), pero para cada habilidad transforma el `context`
+ * con `PromptContextBuilder.build()` y lo envía por HTTP a un endpoint
+ * configurable — en vez de sintetizar la respuesta por reglas locales, como
+ * hace LocalResponseProvider. Desde la Fase 5, Paso 1, este es también el
+ * mecanismo de transporte que usa AIResponseProvider por debajo — ver
+ * assets/js/providers/ai-response-provider.js para el porqué de esa
+ * separación (transporte agnóstico vs. cara pública "el proveedor de IA").
  *
  * Activación: gobernada enteramente por el feature flag
  * `remoteResponseProvider` (ver assets/js/feature-flags.js). Ningún perfil

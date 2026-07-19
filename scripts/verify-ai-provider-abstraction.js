@@ -1,13 +1,17 @@
 /*
- * Smoke test headless para Fase 4, Paso 1 — Abstracción de Proveedores de IA.
+ * Smoke test headless para Fase 4, Paso 1 — Abstracción de Proveedores de IA
+ * (contrato/registro) — actualizado en Fase 5, Paso 1 para reflejar que
+ * AIResponseProvider dejó de ser un placeholder que siempre rechaza.
  *
  * Verifica el contrato común (response-provider-contract.js), que
  * LocalResponseProvider lo sigue cumpliendo sin haber sido modificado, que
- * AIResponseProvider existe como placeholder puro que cumple el mismo
- * contrato pero rechaza toda llamada sin red/IA real, y que ResponseProvider
- * (el registro/puerto) acepta ambos proveedores sin cambiar su
- * comportamiento previo. Todo se carga en un sandbox de Node (sin DOM, sin
- * red), en el mismo orden que los <script> de index.html.
+ * AIResponseProvider cumple el mismo contrato (hoy delegando en
+ * RemoteResponseProvider — ver scripts/verify-ai-response-provider.js para
+ * el comportamiento real de esa delegación, fuera de alcance de este
+ * archivo), y que ResponseProvider (el registro/puerto) acepta ambos
+ * proveedores sin cambiar su comportamiento previo. Todo se carga en un
+ * sandbox de Node (sin DOM, sin red real), en el mismo orden que los
+ * <script> de index.html.
  *
  * Uso: node scripts/verify-ai-provider-abstraction.js
  */
@@ -20,9 +24,13 @@ const ROOT = path.join(__dirname, '..');
 const FILES = {
   data: path.join(ROOT, 'assets', 'js', 'data.js'),
   contextBuilder: path.join(ROOT, 'assets', 'js', 'context-builder.js'),
+  promptContextBuilder: path.join(ROOT, 'assets', 'js', 'prompt-context-builder.js'),
+  commercialDataProvider: path.join(ROOT, 'assets', 'js', 'commercial-data-provider.js'),
+  featureFlags: path.join(ROOT, 'assets', 'js', 'feature-flags.js'),
   responseProviderContract: path.join(ROOT, 'assets', 'js', 'response-provider-contract.js'),
   responseProvider: path.join(ROOT, 'assets', 'js', 'response-provider.js'),
   localProvider: path.join(ROOT, 'assets', 'js', 'providers', 'local-response-provider.js'),
+  remoteProvider: path.join(ROOT, 'assets', 'js', 'providers', 'remote-response-provider.js'),
   aiProvider: path.join(ROOT, 'assets', 'js', 'providers', 'ai-response-provider.js'),
 };
 
@@ -40,8 +48,8 @@ function assert(cond, msg) {
 }
 
 async function main() {
-  await check('ningún archivo de este paso referencia red/DOM/SDKs de IA en código ejecutable', () => {
-    const banned = ['fetch(', 'XMLHttpRequest', 'document.', 'window.', 'gemini', 'openai', 'anthropic'];
+  await check('ningún archivo de este paso referencia DOM/SDKs de IA en código ejecutable (fetch SÍ es esperado, vía RemoteResponseProvider)', () => {
+    const banned = ['XMLHttpRequest', 'document.', 'window.', 'gemini', 'openai', 'anthropic'];
     const stripComments = src => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
     const offenders = [];
     for (const key of ['responseProviderContract', 'responseProvider', 'localProvider', 'aiProvider']) {
@@ -52,9 +60,26 @@ async function main() {
     assert(offenders.length === 0, `referencias prohibidas encontradas — ${offenders.join(' | ')}`);
   });
 
+  await check('ai-response-provider.js no reimplementa ninguna lógica de transporte — es un delegado puro (por inspección de código ejecutable, sin comentarios)', () => {
+    const stripComments = src => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    const src = stripComments(fs.readFileSync(FILES.aiProvider, 'utf8'));
+    assert(!/\bfetch\s*\(/.test(src), 'AIResponseProvider no debería llamar a fetch() directamente — eso es responsabilidad exclusiva de RemoteResponseProvider');
+    assert(!/PromptContextBuilder/.test(src), 'AIResponseProvider no debería referenciar PromptContextBuilder directamente (en código, fuera de comentarios) — la conversión Context→PromptContext ocurre solo dentro de RemoteResponseProvider');
+    assert(/RemoteResponseProvider\./.test(src), 'AIResponseProvider debería delegar explícitamente en RemoteResponseProvider');
+  });
+
   const sandbox = {};
   vm.createContext(sandbox);
-  for (const key of ['data', 'contextBuilder', 'responseProviderContract', 'responseProvider', 'localProvider', 'aiProvider']) {
+  // RemoteResponseProvider (cargado transitivamente por AIResponseProvider
+  // desde este paso) usa setTimeout/AbortController para su timeout — un
+  // vm.createContext() vacío no los trae por defecto (ver el bug real
+  // encontrado y corregido en verify-remote-response-provider.js, Fase 4
+  // Paso 4); se inyectan aquí por la misma razón, aunque ningún check de
+  // este archivo llegue a ejercitar esa ruta con el flag desactivado.
+  sandbox.setTimeout = setTimeout;
+  sandbox.clearTimeout = clearTimeout;
+  sandbox.AbortController = AbortController;
+  for (const key of ['data', 'contextBuilder', 'promptContextBuilder', 'commercialDataProvider', 'featureFlags', 'responseProviderContract', 'responseProvider', 'localProvider', 'remoteProvider', 'aiProvider']) {
     vm.runInContext(fs.readFileSync(FILES[key], 'utf8'), sandbox, { filename: path.basename(FILES[key]) });
   }
   const run = code => vm.runInContext(code, sandbox, { filename: 'assert.js' });
@@ -94,28 +119,32 @@ async function main() {
       `LocalResponseProvider no cumple el contrato — faltan: ${run('JSON.stringify(ResponseProviderContract.missingMethods(LocalResponseProvider))')}`);
   });
 
-  await check('AIResponseProvider existe y cumple el mismo contrato (placeholder, no una implementación real)', () => {
+  await check('AIResponseProvider existe y cumple el mismo contrato (Fase 5, Paso 1: implementación real, delega en RemoteResponseProvider)', () => {
     assert(typeof run('AIResponseProvider') === 'object', 'AIResponseProvider debería existir como objeto global');
     assert(run('ResponseProviderContract.implementedBy(AIResponseProvider) === true'),
       `AIResponseProvider no cumple el contrato — faltan: ${run('JSON.stringify(ResponseProviderContract.missingMethods(AIResponseProvider))')}`);
   });
 
-  await check('cada método de AIResponseProvider rechaza su Promise (nunca resuelve con una respuesta fabricada)', async () => {
+  await check('cada método de AIResponseProvider resuelve (delega en RemoteResponseProvider, que cae a Local con el flag desactivado — nunca queda una Promise sin resolver)', async () => {
     const outcomes = await run(`
       (async function () {
+        const ctxA = ContextBuilder.build(0, { maxPerType: 300 });
+        const ctxB = ContextBuilder.build(1, { maxPerType: 300 });
         const out = {};
-        for (const m of ResponseProviderContract.METHODS) {
-          try { await AIResponseProvider[m](); out[m] = 'resolved'; }
-          catch (e) { out[m] = e.message; }
-        }
+        out.explainProduct = (await AIResponseProvider.explainProduct(ctxA)).skill;
+        out.compareProducts = (await AIResponseProvider.compareProducts(ctxA, ctxB)).skill;
+        out.bestAlternative = (await AIResponseProvider.bestAlternative(ctxA)).skill;
+        out.crossSell = (await AIResponseProvider.crossSell(ctxA)).skill;
+        out.priceAndAvailability = (await AIResponseProvider.priceAndAvailability(ctxA)).skill;
         return JSON.stringify(out);
       })()
     `);
     const parsed = JSON.parse(outcomes);
-    for (const m of ['explainProduct', 'compareProducts', 'bestAlternative', 'crossSell', 'priceAndAvailability']) {
-      assert(parsed[m] !== 'resolved', `AIResponseProvider.${m} resolvió en lugar de rechazar — no debería devolver nada utilizable todavía`);
-      assert(typeof parsed[m] === 'string' && parsed[m].length > 0, `AIResponseProvider.${m} debería rechazar con un mensaje de error`);
-    }
+    assert(parsed.explainProduct === 'explain-product', 'AIResponseProvider.explainProduct debería resolver con skill:"explain-product"');
+    assert(parsed.compareProducts === 'compare-products', 'AIResponseProvider.compareProducts debería resolver con skill:"compare-products"');
+    assert(parsed.bestAlternative === 'best-alternative', 'AIResponseProvider.bestAlternative debería resolver con skill:"best-alternative"');
+    assert(parsed.crossSell === 'cross-sell', 'AIResponseProvider.crossSell debería resolver con skill:"cross-sell"');
+    assert(parsed.priceAndAvailability === 'price-availability', 'AIResponseProvider.priceAndAvailability debería resolver con skill:"price-availability"');
   });
 
   await check('ResponseProvider.use() acepta tanto a LocalResponseProvider como a AIResponseProvider (ambos son proveedores válidos)', () => {

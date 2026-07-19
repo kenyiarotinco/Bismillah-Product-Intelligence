@@ -1,4 +1,4 @@
-# ARCHITECTURE — AI Sales Copilot & Commercial Data (Fases 2-4)
+# ARCHITECTURE — AI Sales Copilot & Commercial Data (Fases 2-5)
 
 Este documento cubre los módulos de datos/lógica que sostienen al AI Sales
 Copilot, en el orden en que los atraviesa una petición:
@@ -2470,3 +2470,167 @@ Verificación adicional: se confirmó, con `grep` sobre los tres
 `REMOTE_PROVIDER_CONFIG=` — cero coincidencias. Verificación en navegador
 (perfil demo): sin errores de consola, comportamiento idéntico al actual —
 este paso no modificó ningún archivo servido al navegador.
+
+# FASE 5 — Gemini como proveedor de IA activable
+
+## AIResponseProvider: del placeholder a la implementación real (Fase 5, Paso 1)
+
+### Qué cambia, y qué NO cambia
+
+Este paso reemplaza el placeholder de `AIResponseProvider` (Fase 4, Paso 1
+— siempre rechazaba con "todavía no implementado") por una implementación
+real, cumpliendo al pie de la letra "Implementar únicamente
+AIResponseProvider": el archivo pasa de ~15 a ~10 líneas de lógica real, y
+es la ÚNICA pieza del sistema con comportamiento nuevo. Nada más cambia:
+`ContextBuilder`, `PromptContextBuilder`, `CommercialDataProvider`, el
+pipeline comercial, `LocalResponseProvider`, `RemoteResponseProvider` y
+`gemini-proxy-server.js`/`gemini-prompt-builder.js` tienen cero diff de
+comportamiento. `app.js` tampoco cambia: la línea de activación sigue
+siendo `ResponseProvider.use(FeatureFlags.isEnabled('remoteResponseProvider')
+? RemoteResponseProvider : LocalResponseProvider)` — `AIResponseProvider`
+existe, es completamente funcional, y cumple el contrato, pero activarlo en
+la aplicación real es una decisión explícitamente fuera del alcance de este
+paso.
+
+### Por qué `AIResponseProvider` es un delegado de una línea por método, no una reimplementación
+
+```js
+const AIResponseProvider = (function () {
+  return {
+    explainProduct: context => RemoteResponseProvider.explainProduct(context),
+    compareProducts: (contextA, contextB) => RemoteResponseProvider.compareProducts(contextA, contextB),
+    bestAlternative: context => RemoteResponseProvider.bestAlternative(context),
+    crossSell: context => RemoteResponseProvider.crossSell(context),
+    priceAndAvailability: context => RemoteResponseProvider.priceAndAvailability(context),
+  };
+})();
+```
+
+Todo lo que este paso exige —consumir `PromptContext`, construir la
+petición (que termina resuelta por `GeminiPromptBuilder`, server-side),
+enviarla mediante `RemoteResponseProvider`, devolver la respuesta de
+Gemini, y caer a `LocalResponseProvider` ante timeout / error HTTP /
+respuesta vacía / JSON inválido / error del proxy / error del modelo— ya
+existía, completo y exhaustivamente probado, en `RemoteResponseProvider`
+desde la Fase 4, Pasos 3-5. Reimplementarlo aquí habría sido duplicar
+lógica ya aprobada — la misma disciplina de "no duplicar lógica" que ha
+regido cada paso de este proyecto. `AIResponseProvider` nunca lee ni
+interpreta ningún campo de `context`: lo recibe únicamente porque el
+`ResponseProviderContract` exige esa firma, y lo relaya sin tocarlo — la
+conversión real de `Context` a `PromptContext` (`PromptContextBuilder.build()`)
+ocurre enteramente dentro de `RemoteResponseProvider`, nunca en este
+archivo (verificado en QA por inspección de código: `AIResponseProvider`
+no referencia `fetch(` ni `PromptContextBuilder` en absoluto).
+
+### Por qué existen DOS módulos (`RemoteResponseProvider` y `AIResponseProvider`) en vez de uno solo
+
+- **`RemoteResponseProvider`** es el mecanismo de transporte, deliberadamente
+  agnóstico al proveedor desde su diseño (Fase 4, Paso 3): sabe hablar HTTP
+  con cualquier endpoint que cumpla el contrato, sin saber que Gemini
+  existe. Es la pieza reutilizable el día que exista un
+  `OpenAIResponseProvider`/`ClaudeResponseProvider` — cada uno delegaría en
+  él exactamente igual que `AIResponseProvider` hoy (probablemente cada uno
+  con su propio `REMOTE_PROVIDER_CONFIG`/proxy distinto).
+- **`AIResponseProvider`** es el nombre con el que el resto del sistema
+  (`ResponseProvider`, `app.js`) conoce "el proveedor de IA" — la cara
+  pública y estable del concepto, la misma que ya existía como placeholder
+  desde la Fase 4, Paso 1. Este paso la completa, no la reemplaza por otro
+  archivo ni otro global.
+
+Fusionarlos habría acoplado "cuál es el proveedor de IA activo" con "cómo
+se transporta HTTP" — dos preocupaciones que la Fase 4 ya había separado a
+propósito.
+
+### Correcciones de documentación en archivos vecinos (comentarios, no comportamiento)
+
+Dos comentarios quedaron desactualizados por este cambio y se corrigieron,
+sin tocar ninguna línea de lógica:
+
+- `assets/js/providers/remote-response-provider.js`: su cabecera describía
+  a `AIResponseProvider` como algo que "rechaza siempre" — ya no es cierto,
+  así que se actualizó para explicar la relación real (transporte agnóstico
+  vs. cara pública).
+- `scripts/verify-ai-provider-abstraction.js` (Fase 4, Paso 1): su check
+  "cada método de AIResponseProvider rechaza su Promise (nunca resuelve con
+  una respuesta fabricada)" pasó de ser una aserción válida a una
+  desactualizada por diseño — este paso la reemplaza por una que confirma
+  que las 5 habilidades ahora **resuelven** correctamente (delegando en
+  `RemoteResponseProvider`, que cae a Local con el flag desactivado). Ver
+  el detalle en la sección de QA más abajo.
+
+### Fuera de alcance (deliberado, en este paso)
+
+- `AIResponseProvider` no se activa en `app.js` — sigue existiendo como
+  proveedor registrable pero inactivo, igual que desde la Fase 4, Paso 1.
+- Ninguna llamada real a Gemini se ejecutó en esta sesión — la validación
+  real sigue siendo, exclusivamente, la guía manual
+  (`docs/GEMINI_MANUAL_VALIDATION.md`, Fase 4, Paso 6), sin cambios.
+- Sin cambios en `ContextBuilder`, `PromptContextBuilder`,
+  `CommercialDataProvider`, el pipeline comercial, `LocalResponseProvider`,
+  las 5 habilidades, `gemini-proxy-server.js` ni
+  `gemini-prompt-builder.js` — cero diff en los ocho.
+
+### QA — AI Response Provider (nueva) y AI Provider Abstraction (actualizada)
+
+**`scripts/verify-ai-response-provider.js`** (nuevo) — **15/15 checks**:
+
+1. Guardrail estático: el archivo no referencia red/DOM/SDKs de IA
+   directamente (todo pasa por `RemoteResponseProvider`).
+2. `ResponseProviderContract.implementedBy(AIResponseProvider) === true`.
+3. **Delegación exacta**: con el flag desactivado (estado real de hoy), las
+   5 habilidades de `AIResponseProvider` producen exactamente el mismo
+   resultado que llamar a `RemoteResponseProvider` directamente —
+   verificado en las 5, no solo una.
+4. Un contexto inválido (`null`) rechaza con el mismo mensaje exacto que
+   `RemoteResponseProvider`/`LocalResponseProvider`.
+5. **QA requerido #1 (Gemini responde correctamente)**: con un `fetch`
+   simulado exitoso, `AIResponseProvider` devuelve `source:"gemini"` con el
+   contenido real del modelo simulado.
+6. **QA requerido #2 (fallback para todos los errores previstos)**: los 6
+   modos de fallo mínimos exigidos por la especificación —flag
+   deshabilitado, sin `REMOTE_PROVIDER_CONFIG`, timeout, error HTTP,
+   respuesta vacía (el cuerpo no parsea como JSON), JSON inválido, error
+   del proxy (fallo de red), y error del modelo (skill no coincide)—
+   verificados uno por uno, cada uno devolviendo exactamente la misma
+   respuesta que `LocalResponseProvider` — nunca un error técnico visible.
+7. **QA requerido #3 (sin regresiones)**: `LocalResponseProvider`, llamado
+   directamente, sigue funcionando exactamente igual.
+8. **Los 1.094 productos del catálogo**, con el flag desactivado:
+   `AIResponseProvider` idéntico a `LocalResponseProvider`, sin excepciones.
+
+**`scripts/verify-ai-provider-abstraction.js`** (Fase 4, Paso 1,
+actualizado) — **11/11 checks** (10 preexistentes + 1 nuevo, uno
+reemplazado): se agregó un check de que `AIResponseProvider` no reimplementa
+transporte (sin `fetch(` ni `PromptContextBuilder` en su código ejecutable,
+por inspección, excluyendo comentarios); el check que asumía "siempre
+rechaza" se reemplazó por uno que confirma que las 5 habilidades ahora
+resuelven correctamente con `skill` válido; el sandbox de carga se amplió
+para incluir `PromptContextBuilder`/`CommercialDataProvider`/`FeatureFlags`/
+`RemoteResponseProvider` (dependencias transitivas nuevas de
+`AIResponseProvider`) y se inyectaron `setTimeout`/`AbortController` (mismo
+gotcha del `vm` de Node ya documentado en la Fase 4, Paso 4).
+
+Resultado: **15/15** en `verify-ai-response-provider.js`, **11/11** en
+`verify-ai-provider-abstraction.js`. Se volvieron a correr las 11 suites
+restantes en el mismo momento —
+`scripts/verify-context-builder.js` (**10/10**),
+`scripts/verify-commercial-data.js` (**8/8**),
+`scripts/verify-response-provider.js` (**9/9**),
+`scripts/verify-compare-products.js` (**10/10**),
+`scripts/verify-best-alternative.js` (**10/10**),
+`scripts/verify-cross-sell.js` (**10/10**),
+`scripts/verify-price-availability.js` (**12/12**),
+`scripts/verify-prompt-context-builder.js` (**17/17**),
+`scripts/verify-remote-response-provider.js` (**15/15**),
+`scripts/verify-gemini-prompt-builder.js` (**17/17**),
+`scripts/verify-gemini-proxy-server.js` (**22/22**) y
+`scripts/verify-manual-gemini-check-safeguards.js` (**6/6**) — cero
+regresión sobre las Fases 2, 3, 4 y 4 · Paso 6. **Total: 172/172 checks.**
+
+Verificación adicional en navegador (perfil demo): sin errores de consola;
+`ResponseProvider.get() === LocalResponseProvider` sin cambios;
+`FeatureFlags.isEnabled('remoteResponseProvider') === false`;
+`ResponseProviderContract.implementedBy(AIResponseProvider) === true`.
+Flujo completo probado en Producto 360: "Venta cruzada inteligente"
+(habilidad 5) etiquetada `local` en el panel, generando recomendaciones
+reales exactamente igual que antes de este paso.
