@@ -13,6 +13,12 @@
  * Promise<{skill, source, generatedAt, text}>`. El día que exista un
  * GeminiResponseProvider con esa misma forma, el único cambio en todo el
  * sistema es la línea `ResponseProvider.use(...)` en app.js.
+ *
+ * Fase 2, Paso 4: implementa también `compareProducts(contextA, contextB)`,
+ * con el mismo enfoque — sin IA, sin red, solo reglas sobre los campos que
+ * ya entrega ContextBuilder para cada producto — y reutilizando (no
+ * duplicando) el vocabulario y la extracción de beneficios ya definidos más
+ * abajo para explainProduct().
  */
 'use strict';
 
@@ -68,6 +74,94 @@ const LocalResponseProvider = (function () {
       detalle[0] ||
       null
     );
+  }
+
+  // ---------- compareProducts: helpers propios, reutilizan labelFor()/
+  // extractQuoted()/collectBenefits() ya definidos arriba — no se duplica
+  // ningún vocabulario ni técnica de extracción para esta habilidad. ----------
+
+  function summarizeForCompare(context) {
+    const { producto, relaciones } = context;
+    return {
+      sku: producto.sku,
+      nombre: producto.nombre,
+      universo: producto.universo,
+      categoria: producto.subcategoria,
+      beneficios: collectBenefits(relaciones.detalle),
+      etiquetas: producto.tags,
+      relaciones: { total: relaciones.total, porTipo: relaciones.porTipo },
+    };
+  }
+
+  function intersect(a, b) {
+    return a.filter(x => b.includes(x));
+  }
+  function onlyIn(a, b) {
+    return a.filter(x => !b.includes(x));
+  }
+
+  // Un hecho real, no inferido: ¿aparece B explícitamente entre las
+  // relaciones de A (o A entre las de B)? Depende de que el contexto se haya
+  // construido con un maxPerType suficientemente alto como para no truncar
+  // antes de llegar al otro producto — responsabilidad de quien orquesta la
+  // llamada (ver COMPARE_MAX_PER_TYPE en app.js).
+  function findDirectRelation(contextFrom, contextTo) {
+    const match = contextFrom.relaciones.detalle.find(d => d.sku === contextTo.producto.sku);
+    if (!match) return null;
+    return { tipo: match.tipo, confianza: match.confianza, justificacion: match.justificacion };
+  }
+
+  function buildComparison(contextA, contextB) {
+    const a = summarizeForCompare(contextA);
+    const b = summarizeForCompare(contextB);
+    const directa = findDirectRelation(contextA, contextB) || findDirectRelation(contextB, contextA);
+
+    const similitudes = [];
+    const diferencias = [];
+
+    if (a.universo && b.universo && a.universo === b.universo) {
+      similitudes.push(`Ambos pertenecen al universo ${a.universo}.`);
+    } else if (a.universo && b.universo) {
+      diferencias.push(`Universos distintos: "${a.nombre}" es ${a.universo}, "${b.nombre}" es ${b.universo}.`);
+    }
+
+    if (a.categoria && b.categoria && a.categoria === b.categoria) {
+      similitudes.push(`Comparten la misma subcategoría: "${a.categoria}".`);
+    } else if (a.categoria && b.categoria) {
+      diferencias.push(`Subcategorías distintas: "${a.categoria}" vs "${b.categoria}".`);
+    }
+
+    const beneficiosComunes = intersect(a.beneficios, b.beneficios);
+    if (beneficiosComunes.length) {
+      similitudes.push(`Beneficios en común: ${beneficiosComunes.join(', ')}.`);
+    }
+    const beneficiosSoloA = onlyIn(a.beneficios, b.beneficios);
+    const beneficiosSoloB = onlyIn(b.beneficios, a.beneficios);
+    if (beneficiosSoloA.length) diferencias.push(`Solo "${a.nombre}" aporta: ${beneficiosSoloA.join(', ')}.`);
+    if (beneficiosSoloB.length) diferencias.push(`Solo "${b.nombre}" aporta: ${beneficiosSoloB.join(', ')}.`);
+
+    const etiquetasComunes = intersect(a.etiquetas, b.etiquetas);
+    if (etiquetasComunes.length) {
+      similitudes.push(`Etiquetas en común: ${etiquetasComunes.join(', ')}.`);
+    }
+
+    if (directa) {
+      similitudes.push(
+        `Están directamente relacionados en el grafo del catálogo (${labelFor(directa.tipo)}, confianza ${directa.confianza}): ${directa.justificacion}.`
+      );
+    } else {
+      diferencias.push('No hay una relación directa registrada entre estos dos productos en el catálogo.');
+    }
+
+    if (Math.abs(a.relaciones.total - b.relaciones.total) >= 10) {
+      const mayor = a.relaciones.total >= b.relaciones.total ? a : b;
+      const menor = mayor === a ? b : a;
+      diferencias.push(
+        `"${mayor.nombre}" tiene muchas más relaciones registradas en el catálogo que "${menor.nombre}" (${mayor.relaciones.total} vs ${menor.relaciones.total}).`
+      );
+    }
+
+    return { productos: { a, b }, similitudes, diferencias };
   }
 
   function buildText(context) {
@@ -127,5 +221,20 @@ const LocalResponseProvider = (function () {
     });
   }
 
-  return { explainProduct };
+  function compareProducts(contextA, contextB) {
+    if (!contextA || !contextA.producto || !contextA.relaciones) {
+      return Promise.reject(new Error('LocalResponseProvider.compareProducts: contexto del producto A inválido o incompleto.'));
+    }
+    if (!contextB || !contextB.producto || !contextB.relaciones) {
+      return Promise.reject(new Error('LocalResponseProvider.compareProducts: contexto del producto B inválido o incompleto.'));
+    }
+    return Promise.resolve({
+      skill: 'compare-products',
+      source: SOURCE,
+      generatedAt: new Date().toISOString(),
+      ...buildComparison(contextA, contextB),
+    });
+  }
+
+  return { explainProduct, compareProducts };
 })();

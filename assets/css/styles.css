@@ -164,6 +164,35 @@ tbody tr.rowlink:hover{background:var(--emerald-tint)}
 @keyframes copilot-pulse{0%,100%{opacity:1}50%{opacity:.35}}
 @media(prefers-reduced-motion:reduce){.dot-live{animation:none}}
 
+/* ---------- compare products (Fase 2, Paso 4) ---------- */
+.compare-picker{margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:var(--r);background:var(--paper)}
+.compare-b-input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);font-size:12.5px}
+.compare-b-results{margin-top:8px;display:flex;flex-direction:column;gap:5px;max-height:180px;overflow-y:auto}
+.compare-b-item{display:flex;flex-direction:column;gap:1px;width:100%;text-align:left;padding:7px 9px;border:1px solid var(--line-2);border-radius:7px;background:var(--card);cursor:pointer;transition:border-color .15s,background .15s}
+.compare-b-item:hover{border-color:var(--indigo);background:var(--indigo-tint)}
+.compare-b-item-nm{font-size:12px;font-weight:500;color:var(--ink)}
+.compare-b-item-mt{font-family:var(--ff-m);font-size:10px;color:var(--ink-3)}
+.compare-b-hint,.compare-b-empty{font-size:11.5px;color:var(--ink-3);padding:4px 2px}
+.compare-response{white-space:normal}
+.compare-prod{padding:9px 0;border-bottom:1px solid var(--line-2)}
+.compare-prod:last-of-type{border-bottom:1px solid var(--line-2)}
+.compare-prod-h{font-family:var(--ff-m);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--indigo);font-weight:500;margin-bottom:3px}
+.compare-prod-nm{font-family:var(--ff-d);font-size:12.5px;font-weight:600;color:var(--ink)}
+.compare-prod-meta{font-size:11px;color:var(--ink-3);margin:2px 0 6px}
+.compare-prod-row{display:flex;align-items:flex-start;gap:8px;font-size:11px;color:var(--ink-2);margin-top:4px}
+.compare-prod-row>span:first-child{flex:none;width:62px;color:var(--ink-3);font-family:var(--ff-m);font-size:10px;padding-top:2px}
+.compare-prod-pills{display:flex;flex-wrap:wrap;gap:3px}
+.compare-none{color:var(--ink-3);font-style:italic;font-size:11px}
+.compare-section{margin-top:10px}
+.compare-section h5{font-family:var(--ff-m);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);font-weight:500;margin-bottom:5px}
+.compare-list{list-style:none;display:flex;flex-direction:column;gap:5px}
+.compare-list li{position:relative;padding-left:15px;font-size:11.5px;line-height:1.4;color:var(--ink-2)}
+.compare-list li::before{content:'';position:absolute;left:0;top:6px;width:7px;height:7px;border-radius:2px}
+.compare-list.sim li::before{background:var(--emerald)}
+.compare-list.dif li::before{background:var(--amber)}
+.compare-restart{width:100%;margin-top:12px;padding:9px;font-size:12px;font-weight:500;color:var(--indigo);border:1px dashed var(--line);border-radius:var(--r)}
+.compare-restart:hover{background:var(--indigo-tint);border-color:var(--indigo)}
+
 /* ---------- motores ---------- */
 .engine-tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
 .engine-tabs button{padding:9px 15px;border:1px solid var(--line);border-radius:999px;background:var(--card);font-size:13px;font-weight:500;color:var(--ink-2)}

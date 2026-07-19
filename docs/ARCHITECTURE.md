@@ -8,9 +8,9 @@ Usuario → AI Sales Copilot (panel, app.js) → Context Builder → Response Pr
 ```
 
 - **Context Builder** (Paso 2): construye el contexto de un producto.
-- **Response Provider** (Paso 3): a partir de ese contexto, genera la
-  respuesta de una habilidad concreta del Copilot (por ahora, solo
-  "Explicar producto").
+- **Response Provider** (Pasos 3-4): a partir de uno o más contextos, genera
+  la respuesta de una habilidad concreta del Copilot — hoy, "Explicar
+  producto" (Paso 3) y "Comparar productos" (Paso 4).
 
 ## Context Builder (Fase 2, Paso 2)
 
@@ -182,16 +182,18 @@ Verificación adicional en navegador: `index.html` con el nuevo
 `ContextBuilder` disponible en consola, Producto 360 y el panel AI Sales
 Copilot se renderizan igual que antes de este paso, sin errores de consola.
 
-## Response Provider (Fase 2, Paso 3)
+## Response Provider (Fase 2, Pasos 3-4)
 
 ### Responsabilidad
 
-Dado el contexto que entrega `ContextBuilder.build()`, generar la respuesta
-de texto de una habilidad concreta del Copilot. En este paso, una sola
-habilidad: **Explicar producto**. El módulo no sabe nada de productos, del
-grafo o de `DATA` — solo sabe transformar el objeto `context` que recibe en
-un `{skill, source, generatedAt, text}`. Tampoco decide cuándo se le invoca
-ni dónde se pinta la respuesta: eso lo orquesta `app.js` (ver más abajo).
+Dado uno o más contextos que entrega `ContextBuilder.build()`, generar la
+respuesta de una habilidad concreta del Copilot. Dos habilidades
+implementadas hasta ahora: **Explicar producto** (Paso 3, un contexto →
+texto) y **Comparar productos** (Paso 4, dos contextos → similitudes y
+diferencias). El módulo no sabe nada de productos, del grafo o de `DATA` —
+solo sabe transformar el/los objeto(s) `context` que recibe en la forma que
+exige `response-provider.js`. Tampoco decide cuándo se le invoca ni dónde se
+pinta la respuesta: eso lo orquesta `app.js` (ver más abajo).
 
 Son dos archivos con responsabilidades distintas, a propósito:
 
@@ -226,7 +228,9 @@ qué opciones, cuándo se le pasa el resultado a `ResponseProvider`, y qué
 hacer con la respuesta (mostrarla, mostrar un error, mostrar "cargando").
 Esa pieza es UI por definición — vive en `app.js`, junto al resto del panel
 del Copilot (`copilotPanelHTML()`, `wireCopilotPanel()`,
-`onExplainProductClick()`). No se extrajo a un archivo aparte porque, a
+`onExplainProductClick()`, y desde el Paso 4 también
+`onCompareProductsClick()` / `onCompareSearchInput()` /
+`onCompareProductBSelected()`). No se extrajo a un archivo aparte porque, a
 diferencia de Context Builder y Response Provider, esta pieza SÍ necesita el
 DOM y el estado de Producto 360 (`p360Current`) — no hay nada que ganar
 desacoplándola, y el proyecto no usa un framework de componentes que
@@ -244,17 +248,28 @@ modificar Producto 360".
 
 ```js
 // response-provider.js — el puerto
-ResponseProvider.use(provider)   // registra el proveedor activo; valida que implemente explainProduct()
+ResponseProvider.use(provider)   // registra el proveedor activo; valida que implemente explainProduct() y compareProducts()
 ResponseProvider.get()           // devuelve el proveedor activo; lanza si no hay ninguno
 ResponseProvider.isReady()       // true/false
 
-// Contrato que debe cumplir cualquier proveedor:
+// Contrato que debe cumplir cualquier proveedor — un método por habilidad:
 provider.explainProduct(context) => Promise<{
   skill: 'explain-product',
   source: string,        // 'local' | 'gemini' | ...
   generatedAt: string,   // ISO 8601
   text: string,
 }>
+
+provider.compareProducts(contextA, contextB) => Promise<{
+  skill: 'compare-products',
+  source: string,
+  generatedAt: string,
+  productos: { a: ProductoResumen, b: ProductoResumen },
+  similitudes: string[],
+  diferencias: string[],
+}>
+// ProductoResumen: { sku, nombre, universo, categoria, beneficios[],
+//   etiquetas[], relaciones: {total, porTipo} }
 ```
 
 `context` es exactamente lo que devuelve `ContextBuilder.build()` — ningún
@@ -344,10 +359,11 @@ la respuesta que el Copilot ya generó. Se verificó manualmente en navegador.
 
 ### Fuera de alcance (deliberado, en el Paso 3)
 
-- Las otras cuatro habilidades (Comparar productos, Precio y disponibilidad,
-  Mejor alternativa, Venta cruzada inteligente) siguen en "Próximamente",
-  sin `data-skill` ni listener — el contrato de `ResponseProvider` solo
-  exige `explainProduct` hoy; se ampliará método por método cuando cada
+- Las otras tres habilidades restantes (Precio y disponibilidad, Mejor
+  alternativa, Venta cruzada inteligente) siguen en "Próximamente", sin
+  `data-skill` ni listener — el contrato de `ResponseProvider` solo exigía
+  `explainProduct` en este paso; se amplió con `compareProducts` en el
+  Paso 4 (ver más abajo) y seguirá creciendo método por método cuando cada
   habilidad tenga su propia especificación aprobada.
 - No hay proveedor Gemini, ni configuración de API key, ni ningún código de
   red — ver la sección anterior sobre qué queda pendiente para ese paso.
@@ -356,7 +372,7 @@ la respuesta que el Copilot ya generó. Se verificó manualmente en navegador.
   instantáneo no hay necesidad real de cachear; puede revisarse cuando el
   costo (latencia o cuota de API) de un proveedor real lo justifique.
 
-### QA — Response Provider
+### QA — Explicar producto
 
 `scripts/verify-response-provider.js` — mismo enfoque headless que el del
 Context Builder: carga `data.js` + `context-builder.js` +
@@ -404,3 +420,159 @@ borra la respuesta ya generada. Layout responsive (375 px) verificado con
 la respuesta visible. Sin errores de consola en ningún caso. Habilidades
 2–5 permanecen visualmente idénticas a como quedaron aprobadas en el Paso 1
 ("Próximamente", sin interacción).
+
+## Comparar productos (Fase 2, Paso 4)
+
+### Por qué vive en el mismo archivo, no en un `CompareProductsProvider` aparte
+
+La primera versión de este paso creó un archivo independiente
+(`providers/compare-products-provider.js`) para el algoritmo de comparación.
+Se descartó y el algoritmo se movió dentro de
+`providers/local-response-provider.js`, junto a `explainProduct`, por
+indicación explícita de la especificación: *"Implementar la funcionalidad en
+LocalResponseProvider"* + *"No duplicar lógica"*. Un archivo aparte habría
+obligado a elegir entre dos malas opciones: duplicar el vocabulario de
+rótulos (`TYPE_LABELS`) y la extracción de beneficios
+(`extractQuoted`/`collectBenefits`) que `explainProduct` ya tiene, o acoplar
+el nuevo archivo a los internos de `local-response-provider.js`. Con todo en
+el mismo archivo, `compareProducts()` reutiliza directamente esas mismas
+funciones — cero duplicación, cero acoplamiento nuevo.
+
+`compareProducts(contextA, contextB)` es, igual que `explainProduct`, una
+función que solo conoce la forma del objeto `context` — nunca llama a
+`ContextBuilder` ni sabe que existe. Construir los dos contextos sigue
+siendo responsabilidad exclusiva de la orquestación en `app.js`
+(`onCompareProductBSelected()`), exactamente el mismo reparto de
+responsabilidades que ya regía para "Explicar producto".
+
+### Quién es el Producto A y quién el Producto B
+
+Producto A es siempre `p360Current` — el producto que Producto 360 ya tiene
+abierto. No existe un selector aparte para "elegir Producto A": Producto 360
+**es** ese selector, ya reutilizado tal cual (nada nuevo que aprender, nada
+que duplique su buscador). Producto B se elige con un campo de búsqueda
+propio del Copilot que aparece al abrir la tarjeta "Comparar productos",
+reutilizando la función `searchProducts()` que ya usa la búsqueda global de
+la topbar — no se reimplementó ninguna lógica de búsqueda.
+
+### Por qué el buscador de Producto B actualiza solo su propio contenedor
+
+`refreshCopilotPanel()` reemplaza el panel completo vía `outerHTML` — barato
+y suficiente para transiciones discretas (clic en una tarjeta, clic en un
+resultado). Pero llamarlo en cada tecla del buscador destruiría el
+`<input>` en cada pulsación y el usuario perdería el foco y el cursor. Por
+eso `onCompareSearchInput()` **no** llama a `refreshCopilotPanel()`: escribe
+directamente en `#compare-b-results` y vuelve a enganchar solo los ítems
+nuevos (`wireCompareResultItems()`). Es el mismo patrón que ya usa la
+búsqueda global del topbar (`gsIn` / `gsDrop` en `app.js`, sin modificar),
+aplicado de forma independiente al buscador del Copilot.
+
+### Cómo se detecta una relación directa real entre A y B
+
+`ContextBuilder.build()` limita `relaciones.detalle` a `maxPerType` por tipo
+(8 por defecto) para no sobrecargar el contexto. Para "Comparar productos"
+eso no basta: si el Producto B es un vecino real de A pero cae fuera de esa
+muestra recortada, la comparación diría —incorrectamente— que no hay
+relación directa. La orquestación en `app.js` resuelve esto pidiendo ambos
+contextos con `COMPARE_MAX_PER_TYPE = 300`, mayor que el grado máximo
+conocido del catálogo actual (229), así que para cualquier producto de hoy
+`relaciones.detalle` contiene **todas** sus relaciones de cada tipo, no solo
+una muestra. `findDirectRelation()` entonces busca honestamente si el SKU de
+B aparece en el detalle de A (o viceversa) — un hecho verificable, no una
+inferencia.
+
+### Qué compara y qué NO inventa
+
+Todo sale de campos que `ContextBuilder` ya expone para cada producto por
+separado — nada se computa a partir de datos externos a los dos contextos:
+
+- **Universo, subcategoría**: comparación directa de `producto.universo` /
+  `producto.subcategoria`.
+- **Beneficios**: mismo mecanismo que `explainProduct` (extracción de
+  justificaciones `MISMO_BENEFICIO`) aplicado a cada producto por separado;
+  similitudes = intersección, diferencias = beneficios exclusivos de cada
+  uno.
+- **Etiquetas**: intersección de `producto.tags`.
+- **Relaciones**: se compara el volumen total (`relaciones.total`) y se
+  reporta como diferencia solo si la brecha es grande (≥10) para no listar
+  ruido en productos con volúmenes similares; y se reporta la relación
+  directa real entre A y B si existe (ver arriba).
+
+Si dos productos no comparten nada de lo anterior, `similitudes` queda como
+un arreglo vacío y el panel lo muestra honestamente ("Sin hallazgos en esta
+categoría") en vez de forzar una similitud que no existe — verificado en
+navegador comparando un antibiótico (Farma) contra un colágeno (Bienestar).
+
+*Nota de alcance:* la especificación original de este paso mencionaba
+también una "conclusión/recomendación comercial" sintetizada. La
+especificación final, más acotada, solo exige similitudes y diferencias —
+por disciplina de alcance ("Implementa únicamente este alcance") esa pieza
+no se construyó en este paso. Los datos para hacerlo (relación directa,
+tipo `SUSTITUYE`/`COMPLEMENTA`/`VARIANTE`, beneficios en común) ya están
+disponibles en el resultado de `compareProducts()`; sería una extensión
+aditiva menor si se aprueba en un paso futuro.
+
+### Fuera de alcance (deliberado, en el Paso 4)
+
+- Sin recomendación/conclusión comercial sintetizada (ver nota de alcance
+  arriba).
+- Sin comparación de precio/stock/margen/estado — el bloque `comercial` del
+  Context Builder sigue en `null` (Fase 1 de Integración de Datos pendiente).
+- El buscador de Producto B no excluye productos ya descartados en una
+  comparación anterior ni recuerda comparaciones previas entre sesiones —
+  cada comparación es independiente, sin historial.
+
+### QA — Comparar productos
+
+`scripts/verify-compare-products.js` — mismo enfoque headless que los pasos
+anteriores: carga `data.js` + `context-builder.js` + `response-provider.js`
++ `providers/local-response-provider.js` en un sandbox de Node, sin DOM ni
+red, y verifica:
+
+1. Guardrail estático sobre código ejecutable (no comentarios) de
+   `response-provider.js` y `local-response-provider.js`: cero referencias a
+   `fetch`, `XMLHttpRequest`, `document`, `window`, `gemini`, `openai`,
+   `anthropic`.
+2. `ResponseProvider.use()` ahora exige **también** `compareProducts` — un
+   proveedor que solo implemente `explainProduct` es rechazado.
+3. `compareProducts(contextA, contextB)` devuelve la forma exacta del
+   contrato, y los SKUs de `productos.a`/`productos.b` corresponden
+   exactamente a los contextos originales (no se mezclan ni se invierten).
+4. Se usan dos `ContextBuilder.build()` genuinamente independientes
+   (índices y SKUs distintos verificados explícitamente).
+5. Dos productos de la misma subcategoría producen la similitud de
+   subcategoría explícita en el texto.
+6. Dos productos de subcategorías distintas producen al menos una
+   diferencia.
+7. Dos productos con una arista real en el grafo (probado con el producto
+   de mayor grado del catálogo y uno de sus vecinos reales) producen la
+   similitud de "relación directa".
+8. Un contexto inválido (`null`) rechaza la Promise en vez de lanzar de
+   forma síncrona.
+9. `explainProduct` sigue funcionando exactamente igual tras ampliar el
+   contrato — regresión verificada explícitamente dentro de este mismo
+   script, además de re-correr `verify-response-provider.js` completo.
+10. **1.093 pares consecutivos** de todo el catálogo (`i` con `i+1`, para
+    cada `i`) generan una comparación sin lanzar ninguna excepción.
+
+Resultado: **10/10 checks OK**. Se volvieron a correr
+`scripts/verify-context-builder.js` (**10/10**) y
+`scripts/verify-response-provider.js` (**9/9**) en el mismo momento — cero
+regresión sobre los Pasos 2 y 3.
+
+Verificación adicional en navegador: flujo completo clic → buscar → elegir
+Producto B → comparación renderizada, probado con dos productos de la misma
+familia (colágenos, similitudes ricas incluyendo relación directa real) y
+con dos productos sin ninguna relación entre sí (antibiótico Farma vs.
+colágeno Bienestar — similitudes vacías mostradas honestamente, cinco
+diferencias concretas). Guardas verificadas: comparar un producto consigo
+mismo muestra un error amigable sin llegar a construir contexto; buscar un
+término sin resultados muestra el estado vacío correcto. El buscador
+mantiene el foco mientras se escribe (actualización dirigida, no
+re-render del panel completo). "Comparar con otro producto" reinicia
+correctamente al estado de búsqueda. "Explicar producto" verificado
+funcionando en paralelo sin interferencia de estado. Cambiar de producto
+reinicia ambas habilidades. Responsive (375 px) verificado con una
+comparación completa visible. Sin errores de consola en ningún caso.
+Habilidades 3–5 permanecen visualmente idénticas a como quedaron aprobadas
+en el Paso 1.

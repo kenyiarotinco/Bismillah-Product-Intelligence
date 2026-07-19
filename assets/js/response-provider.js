@@ -1,4 +1,4 @@
-/* Bismillah Product Intelligence Platform — Response Provider (Fase 2, Paso 3)
+/* Bismillah Product Intelligence Platform — Response Provider (Fase 2, Pasos 3-4)
  *
  * Puerto/contrato que desacopla al AI Sales Copilot de CÓMO se generan sus
  * respuestas. Cualquier proveedor —el local de hoy, o más adelante Google
@@ -6,8 +6,8 @@
  * Copilot, el Context Builder, Producto 360) sepa ni le importe cuál está
  * activo.
  *
- * Contrato que debe cumplir un proveedor para la habilidad "Explicar
- * producto" (única implementada en este paso):
+ * Contrato que debe cumplir un proveedor, método por método, uno por cada
+ * habilidad ya aprobada del Copilot:
  *
  *   explainProduct(context) => Promise<{
  *     skill: 'explain-product',
@@ -16,9 +16,21 @@
  *     text: string,          // explicación lista para mostrar en el panel
  *   }>
  *
- * `context` es exactamente el objeto que devuelve ContextBuilder.build() —
- * ningún proveedor recibe ni el DOM, ni el índice del producto, ni nada de
- * app.js.
+ *   compareProducts(contextA, contextB) => Promise<{
+ *     skill: 'compare-products',
+ *     source: string,
+ *     generatedAt: string,
+ *     productos: { a: ProductoResumen, b: ProductoResumen },
+ *     similitudes: string[],
+ *     diferencias: string[],
+ *   }>
+ *   // ProductoResumen: { sku, nombre, universo, categoria, beneficios[],
+ *   //   etiquetas[], relaciones:{total, porTipo} } — ver
+ *   // providers/local-response-provider.js para el detalle exacto.
+ *
+ * `context`/`contextA`/`contextB` son exactamente los objetos que devuelve
+ * ContextBuilder.build() — ningún proveedor recibe ni el DOM, ni el índice
+ * del producto, ni nada de app.js.
  *
  * Por qué el contrato es async incluso hoy, con un proveedor 100% local y
  * síncrono: el código que consume el proveedor (el panel del Copilot) ya
@@ -27,16 +39,15 @@
  * una línea del código que lo invoca — solo cambia cuánto tarda en
  * resolverse la misma Promise que ya se estaba esperando.
  *
- * Habilidades futuras (Comparar productos, Precio y disponibilidad, Mejor
- * alternativa, Venta cruzada) se añadirán a este mismo contrato como nuevos
- * métodos (`compareProducts`, etc.) cuando se aprueben sus propios pasos —
- * no antes, para no comprometerse hoy con una forma que todavía no se ha
- * diseñado.
+ * Habilidades futuras (Precio y disponibilidad, Mejor alternativa, Venta
+ * cruzada) se añadirán a este mismo contrato como nuevos métodos cuando se
+ * aprueben sus propios pasos — no antes, para no comprometerse hoy con una
+ * forma que todavía no se ha diseñado.
  */
 'use strict';
 
 const ResponseProvider = (function () {
-  const REQUIRED_METHODS = ['explainProduct'];
+  const REQUIRED_METHODS = ['explainProduct', 'compareProducts'];
   let active = null;
 
   function assertShape(provider) {

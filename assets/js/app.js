@@ -320,7 +320,7 @@ const p360Expanded = new Set();
 /* ---------- ai sales copilot ---------- */
 const COPILOT_SKILLS = [
   { key: 'explain-product', icon: '🤖', title: 'Explicar producto', desc: 'Explica beneficios, usos y público objetivo.', bg: 'var(--emerald-tint)', fg: 'var(--emerald-dk)' },
-  { key: null, icon: '⚖️', title: 'Comparar productos', desc: 'Compara dos productos comercialmente.', bg: 'var(--indigo-tint)', fg: 'var(--indigo)' },
+  { key: 'compare-products', icon: '⚖️', title: 'Comparar productos', desc: 'Compara dos productos comercialmente.', bg: 'var(--indigo-tint)', fg: 'var(--indigo)' },
   { key: null, icon: '💰', title: 'Precio y disponibilidad', desc: 'Consulta precio, stock y estado.', bg: 'var(--amber-tint)', fg: '#8A5A14' },
   { key: null, icon: '💲', title: 'Mejor alternativa', desc: 'Encuentra el mejor sustituto.', bg: 'rgba(122,95,191,.14)', fg: 'var(--t2)' },
   { key: null, icon: '🧠', title: 'Venta cruzada inteligente', desc: 'Sugiere productos complementarios y explica por qué recomendarlos.', bg: 'rgba(194,85,127,.14)', fg: 'var(--t5)' },
@@ -333,27 +333,45 @@ const COPILOT_SKILLS = [
 // docs/ARCHITECTURE.md.
 ResponseProvider.use(LocalResponseProvider);
 
-// Estado de la única habilidad implementada en este paso ("Explicar
-// producto"). Sigue el mismo patrón que p360Expanded: vive a nivel de
-// módulo, se reinicia en openProduct() y sobrevive a los re-render parciales
-// del panel (p. ej. al expandir "mostrar más" en un grupo de relaciones).
+// Estado de "Explicar producto". Sigue el mismo patrón que p360Expanded:
+// vive a nivel de módulo, se reinicia en openProduct() y sobrevive a los
+// re-render parciales del panel (p. ej. al expandir "mostrar más" en un
+// grupo de relaciones).
 let copilotExplain = { status: 'idle', text: null, source: null, generatedAt: null, error: null };
+
+// Estado de "Comparar productos" (Fase 2, Paso 4). status:
+//   'idle'    — fila cerrada, sin interacción.
+//   'picking' — fila abierta, buscador de Producto B visible.
+//   'loading' — comparación en curso.
+//   'done'    — respuesta lista (ver `response`).
+//   'error'   — ver `error`.
+let copilotCompare = { status: 'idle', query: '', results: [], productBIndex: null, response: null, error: null };
+
+// Producto A (p360Current) se construye con un maxPerType generoso, mayor
+// que el grado máximo conocido del catálogo (229 — ver docs/PROJECT_BRIEF.md),
+// para que `relaciones.detalle` no trunque antes de encontrar una posible
+// relación directa con el Producto B elegido. Ver findDirectRelation() en
+// providers/local-response-provider.js.
+const COMPARE_MAX_PER_TYPE = 300;
 
 function copilotSkillRowHTML(skill, idx) {
   const isExplain = skill.key === 'explain-product';
-  const status = isExplain ? copilotExplain.status : 'idle';
-  const isOpen = isExplain && (status === 'done' || status === 'error');
+  const isCompare = skill.key === 'compare-products';
 
-  const statusLabel = !isExplain ? 'Próximamente'
+  const status = isExplain ? copilotExplain.status : isCompare ? copilotCompare.status : 'idle';
+  const isOpen = (isExplain && (status === 'done' || status === 'error')) || (isCompare && status !== 'idle');
+
+  const statusLabel = (!isExplain && !isCompare) ? 'Próximamente'
     : status === 'loading' ? 'Generando…'
     : status === 'error' ? 'No se pudo generar'
-    : status === 'done' ? 'Disponible'
+    : status === 'picking' ? 'Elige un producto'
     : 'Disponible';
-  const statusClass = !isExplain ? '' : status === 'error' ? 'is-error' : 'is-active';
+  const statusClass = (!isExplain && !isCompare) ? '' : status === 'error' ? 'is-error' : 'is-active';
 
   const rowHTML = `
     <button class="copilot-row${isOpen ? ' is-open' : ''}${status === 'loading' ? ' is-loading' : ''}" type="button"
       ${isExplain ? 'data-skill="explain-product"' : ''}
+      ${isCompare ? 'data-skill="compare-products"' : ''}
       ${status === 'loading' ? 'aria-busy="true" disabled' : ''}>
       <span class="copilot-ic" style="background:${skill.bg};color:${skill.fg}">${skill.icon}<span class="copilot-ic-n">${idx + 1}</span></span>
       <span class="copilot-row-txt">
@@ -378,9 +396,79 @@ function copilotSkillRowHTML(skill, idx) {
       </div>`;
   } else if (isExplain && status === 'error') {
     extraHTML = `<div class="copilot-response-err">${esc(copilotExplain.error)}</div>`;
+  } else if (isCompare) {
+    extraHTML = copilotCompareExtraHTML();
   }
 
   return `<div class="copilot-skill-block">${rowHTML}${extraHTML}</div>`;
+}
+
+function compareResultsListHTML() {
+  const q = copilotCompare.query.trim();
+  if (q.length < 2) {
+    return `<div class="compare-b-hint">Escribe al menos 2 letras…</div>`;
+  }
+  const matches = copilotCompare.results;
+  if (!matches.length) {
+    return `<div class="compare-b-empty">No se encontraron productos para "${esc(q)}".</div>`;
+  }
+  return matches.map(i => `
+    <button class="compare-b-item" type="button" data-pick-b="${i}">
+      <span class="compare-b-item-nm">${esc(P[i][1])}</span>
+      <span class="compare-b-item-mt">SKU ${P[i][0]}${famOf[i] ? ' · ' + esc(FAMILY[famOf[i]]) : ''}</span>
+    </button>`).join('');
+}
+
+function compareProductBlockHTML(p, label) {
+  const pills = arr => arr.length ? arr.map(t => `<span class="tag">${esc(t)}</span>`).join('') : '<span class="compare-none">—</span>';
+  return `
+    <div class="compare-prod">
+      <div class="compare-prod-h">${label}</div>
+      <div class="compare-prod-nm">${esc(p.nombre)}</div>
+      <div class="compare-prod-meta">${esc(p.categoria || 'Sin categoría')}${p.universo ? ' · ' + esc(p.universo) : ''}</div>
+      <div class="compare-prod-row"><span>Beneficios</span><span class="compare-prod-pills">${pills(p.beneficios)}</span></div>
+      <div class="compare-prod-row"><span>Etiquetas</span><span class="compare-prod-pills">${pills(p.etiquetas)}</span></div>
+      <div class="compare-prod-row"><span>Relaciones</span><span class="compare-prod-rel">${p.relaciones.total}</span></div>
+    </div>`;
+}
+
+function compareResponseHTML(res) {
+  const bullets = (arr, cls) => arr.length
+    ? `<ul class="compare-list ${cls}">${arr.map(s => `<li>${esc(s)}</li>`).join('')}</ul>`
+    : `<p class="compare-none">Sin hallazgos en esta categoría.</p>`;
+  const time = res.generatedAt
+    ? new Date(res.generatedAt).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' })
+    : '';
+  return `
+    <div class="copilot-response compare-response">
+      <div class="copilot-response-h"><span class="dot-live"></span>Comparación · ${esc(res.source || 'local')} · ${time}</div>
+      ${compareProductBlockHTML(res.productos.a, 'Producto A')}
+      ${compareProductBlockHTML(res.productos.b, 'Producto B')}
+      <div class="compare-section"><h5>Similitudes</h5>${bullets(res.similitudes, 'sim')}</div>
+      <div class="compare-section"><h5>Diferencias</h5>${bullets(res.diferencias, 'dif')}</div>
+      <button class="compare-restart" type="button" data-compare-restart="1">Comparar con otro producto</button>
+    </div>`;
+}
+
+function copilotCompareExtraHTML() {
+  const st = copilotCompare;
+  if (st.status === 'picking') {
+    return `
+      <div class="compare-picker">
+        <input id="compare-b-input" type="text" class="compare-b-input" placeholder="Buscar producto para comparar…" autocomplete="off" value="${esc(st.query)}">
+        <div class="compare-b-results" id="compare-b-results">${compareResultsListHTML()}</div>
+      </div>`;
+  }
+  if (st.status === 'loading') {
+    return `<div class="copilot-response-loading"><span class="dot-live"></span>Comparando productos…</div>`;
+  }
+  if (st.status === 'error') {
+    return `<div class="copilot-response-err">${esc(st.error)}</div>`;
+  }
+  if (st.status === 'done' && st.response) {
+    return compareResponseHTML(st.response);
+  }
+  return '';
 }
 
 function copilotPanelHTML() {
@@ -405,8 +493,31 @@ function copilotPanelHTML() {
 }
 
 function wireCopilotPanel() {
-  const btn = $('[data-skill="explain-product"]');
-  if (btn) btn.addEventListener('click', onExplainProductClick);
+  const explainBtn = $('[data-skill="explain-product"]');
+  if (explainBtn) explainBtn.addEventListener('click', onExplainProductClick);
+
+  const compareBtn = $('[data-skill="compare-products"]');
+  if (compareBtn) compareBtn.addEventListener('click', onCompareProductsClick);
+
+  const compareInput = $('#compare-b-input');
+  if (compareInput) {
+    compareInput.addEventListener('input', onCompareSearchInput);
+    compareInput.focus();
+    const end = compareInput.value.length;
+    compareInput.setSelectionRange(end, end);
+  }
+  wireCompareResultItems();
+
+  const restartBtn = $('[data-compare-restart]');
+  if (restartBtn) restartBtn.addEventListener('click', () => {
+    copilotCompare = { status: 'picking', query: '', results: [], productBIndex: null, response: null, error: null };
+    refreshCopilotPanel();
+  });
+}
+
+function wireCompareResultItems() {
+  document.querySelectorAll('[data-pick-b]').forEach(el =>
+    el.addEventListener('click', () => onCompareProductBSelected(+el.dataset.pickB)));
 }
 
 function refreshCopilotPanel() {
@@ -450,10 +561,72 @@ function onExplainProductClick() {
     });
 }
 
+function onCompareProductsClick() {
+  if (copilotCompare.status === 'loading' || p360Current < 0) return;
+  copilotCompare = copilotCompare.status === 'picking'
+    ? { status: 'idle', query: '', results: [], productBIndex: null, response: null, error: null }
+    : { status: 'picking', query: '', results: [], productBIndex: null, response: null, error: null };
+  refreshCopilotPanel();
+}
+
+function onCompareSearchInput(e) {
+  const query = e.target.value;
+  const results = query.trim().length >= 2
+    ? searchProducts(query, 6).filter(i => i !== p360Current)
+    : [];
+  copilotCompare = { ...copilotCompare, query, results };
+  // Actualización dirigida (no refreshCopilotPanel): reemplazar el panel
+  // completo destruiría el <input> en cada tecla y el usuario perdería el
+  // foco/cursor — mismo motivo por el que la búsqueda global (gsIn/gsDrop)
+  // ya actualiza solo su propio contenedor de resultados.
+  const resultsEl = $('#compare-b-results');
+  if (resultsEl) {
+    resultsEl.innerHTML = compareResultsListHTML();
+    wireCompareResultItems();
+  }
+}
+
+function onCompareProductBSelected(bIndex) {
+  if (bIndex === p360Current) {
+    copilotCompare = { status: 'error', query: '', results: [], productBIndex: null, response: null, error: 'Selecciona un producto distinto al que estás viendo.' };
+    refreshCopilotPanel();
+    return;
+  }
+
+  copilotCompare = { status: 'loading', query: '', results: [], productBIndex: bIndex, response: null, error: null };
+  refreshCopilotPanel();
+
+  let contextA, contextB;
+  try {
+    contextA = ContextBuilder.build(p360Current, { maxPerType: COMPARE_MAX_PER_TYPE });
+    contextB = ContextBuilder.build(bIndex, { maxPerType: COMPARE_MAX_PER_TYPE });
+  } catch (err) {
+    copilotCompare = { ...copilotCompare, status: 'error', error: err.message };
+    refreshCopilotPanel();
+    return;
+  }
+  if (!contextA || !contextB) {
+    copilotCompare = { ...copilotCompare, status: 'error', error: 'No se pudo construir el contexto de uno de los dos productos.' };
+    refreshCopilotPanel();
+    return;
+  }
+
+  ResponseProvider.get().compareProducts(contextA, contextB)
+    .then(res => {
+      copilotCompare = { ...copilotCompare, status: 'done', response: res, error: null };
+      refreshCopilotPanel();
+    })
+    .catch(err => {
+      copilotCompare = { ...copilotCompare, status: 'error', response: null, error: err.message || 'Ocurrió un error generando la comparación.' };
+      refreshCopilotPanel();
+    });
+}
+
 function openProduct(i) {
   p360Current = i;
   p360Expanded.clear();
   copilotExplain = { status: 'idle', text: null, source: null, generatedAt: null, error: null };
+  copilotCompare = { status: 'idle', query: '', results: [], productBIndex: null, response: null, error: null };
   showView('p360');
   renderP360();
 }
