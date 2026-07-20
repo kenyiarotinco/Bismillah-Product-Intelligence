@@ -54,7 +54,10 @@ const http = require('http');
 const { buildPrompt, SKILL_SCHEMAS } = require('./gemini-prompt-builder.js');
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-const DEFAULT_MODEL = 'gemini-2.0-flash';
+// Gemini 2.0 Flash fue apagado por Google el 1 de junio de 2026.
+// Mantener aquí un modelo vigente evita que un despliegue sin GEMINI_MODEL
+// configurado degrade silenciosamente todas las solicitudes al fallback local.
+const DEFAULT_MODEL = 'gemini-3.5-flash';
 const DEFAULT_PORT = 8787;
 const DEFAULT_TIMEOUT_MS = 15000;
 const COPILOT_PATH = '/copilot';

@@ -23,7 +23,7 @@ const path = require('path');
 const vm = require('vm');
 const {
   startServer, createRequestHandler, callGemini, buildPrompt, isOriginAllowed, SKILL_SCHEMAS,
-  validateGroundedSkuUsage, validateAvailabilityConsistency,
+  validateGroundedSkuUsage, validateAvailabilityConsistency, DEFAULT_MODEL,
 } = require('../server/gemini-proxy-server.js');
 
 const ROOT = path.join(__dirname, '..');
@@ -64,6 +64,11 @@ async function withServer(options, fn) {
 }
 
 async function main() {
+  await check('DEFAULT_MODEL usa el reemplazo vigente de Gemini 2.0 Flash', () => {
+    assert(DEFAULT_MODEL === 'gemini-3.5-flash',
+      `se esperaba gemini-3.5-flash, se obtuvo ${DEFAULT_MODEL}`);
+  });
+
   await check('gemini-proxy-server.js referencia fetch/http real (integración genuina, no otro placeholder) y no referencia SDKs de otros proveedores', () => {
     const stripComments = src => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
     const src = stripComments(fs.readFileSync(SERVER_FILE, 'utf8'));
