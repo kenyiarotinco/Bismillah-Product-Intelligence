@@ -23,7 +23,7 @@ const path = require('path');
 const vm = require('vm');
 const {
   startServer, createRequestHandler, callGemini, buildPrompt, isOriginAllowed, SKILL_SCHEMAS,
-  validateResponseContract, validateGroundedSkuUsage, validateAvailabilityConsistency,
+  validateResponseContract, validateGroundedSkuUsage, validateCommercialFieldsMatch,
   classifyGeminiError, contractReasonForLog, observeCopilotRequest,
   DEFAULT_MODEL, DEFAULT_TIMEOUT_MS,
 } = require('../server/gemini-proxy-server.js');
@@ -426,18 +426,58 @@ async function main() {
     validateGroundedSkuUsage('cross-sell', promptContext, { recomendaciones: [] });
   });
 
-  await check('validateAvailabilityConsistency() (Paso 5): rechaza disponible:true cuando el PromptContext indica disponibilidad:false', () => {
-    const promptContext = { commercialContext: { disponibilidad: false } };
+  await check('validateCommercialFieldsMatch() (perfil privado): rechaza disponible:true cuando el PromptContext indica disponibilidad:false', () => {
+    const promptContext = { commercialContext: { disponibilidad: false, precio: null, precioLista: null, priceDifference: null, stock: null, estado: null } };
     let threw = null;
     try {
-      validateAvailabilityConsistency('price-availability', promptContext, { disponible: true, precio: 39.9 });
+      validateCommercialFieldsMatch('price-availability', promptContext, { disponible: true, precio: 39.9, precioLista: null, priceDifference: null, stock: null, estado: null });
     } catch (e) { threw = e; }
-    assert(threw && /reportó disponibilidad/.test(threw.message), 'debería rechazar disponible:true cuando el contexto real no tiene cobertura comercial');
+    assert(threw && threw.contractReason === 'commercial_disponibilidad_mismatch', 'debería rechazar disponible:true cuando el contexto real no tiene cobertura comercial, con el código de razón correcto');
 
     // consistente: no debería lanzar
-    validateAvailabilityConsistency('price-availability', promptContext, { disponible: false, precio: null });
+    validateCommercialFieldsMatch('price-availability', promptContext, { disponible: false, precio: null, precioLista: null, priceDifference: null, stock: null, estado: null });
     // otra habilidad: no aplica, no debería lanzar aunque los campos "parezcan" inconsistentes
-    validateAvailabilityConsistency('explain-product', promptContext, { disponible: true });
+    validateCommercialFieldsMatch('explain-product', promptContext, { disponible: true });
+  });
+
+  await check('validateCommercialFieldsMatch(): igualdad estricta en los 6 campos comerciales, cada mismatch con su propio código de razón', () => {
+    // Valores distintivos, ficticios, elegidos para ser fáciles de detectar si "se colaran" a un mensaje o log.
+    const real = { disponibilidad: true, precio: 111.11, precioLista: 222.22, priceDifference: 33.33, stock: 44, estado: 'REAL_ESTADO_FICTICIO' };
+    const promptContext = { commercialContext: real };
+    const base = { disponible: true, precio: 111.11, precioLista: 222.22, priceDifference: 33.33, stock: 44, estado: 'REAL_ESTADO_FICTICIO' };
+
+    // todo coincide: no debería lanzar
+    validateCommercialFieldsMatch('price-availability', promptContext, { ...base });
+
+    const cases = [
+      [{ ...base, disponible: false }, 'commercial_disponibilidad_mismatch'],
+      [{ ...base, precio: 999.99 }, 'commercial_precio_mismatch'],
+      [{ ...base, precioLista: 999.99 }, 'commercial_precioLista_mismatch'],
+      [{ ...base, priceDifference: 999.99 }, 'commercial_priceDifference_mismatch'],
+      [{ ...base, stock: 999 }, 'commercial_stock_mismatch'],
+      [{ ...base, estado: 'VALOR_INVENTADO_POR_EL_MODELO' }, 'commercial_estado_mismatch'],
+    ];
+    for (const [parsed, expectedReason] of cases) {
+      let threw = null;
+      try { validateCommercialFieldsMatch('price-availability', promptContext, parsed); } catch (e) { threw = e; }
+      assert(threw, `debería rechazar cuando ${expectedReason.replace('commercial_', '').replace('_mismatch', '')} no coincide`);
+      assert(threw.contractReason === expectedReason, `código de razón esperado "${expectedReason}", obtenido "${threw.contractReason}"`);
+    }
+  });
+
+  await check('validateCommercialFieldsMatch(): ningún valor comercial real ni del modelo aparece en el mensaje de error ni en el contractReason', () => {
+    const SECRET_REAL = 'PRECIO_REAL_SECRETO_123.45';
+    const SECRET_MODEL = 'PRECIO_INVENTADO_POR_MODELO_999.99';
+    const promptContext = { commercialContext: { disponibilidad: true, precio: SECRET_REAL, precioLista: null, priceDifference: null, stock: null, estado: null } };
+    let threw = null;
+    try {
+      validateCommercialFieldsMatch('price-availability', promptContext, { disponible: true, precio: SECRET_MODEL, precioLista: null, priceDifference: null, stock: null, estado: null });
+    } catch (e) { threw = e; }
+    assert(threw, 'debería haber lanzado por el mismatch de precio');
+    const serialized = JSON.stringify({ message: threw.message, reason: threw.contractReason });
+    assert(!serialized.includes(SECRET_REAL) && !serialized.includes(SECRET_MODEL),
+      'ni el mensaje de error ni el contractReason deben contener el valor real ni el valor inventado por el modelo');
+    assert(threw.contractReason === 'commercial_precio_mismatch', 'el código de razón debe seguir siendo el cerrado y sanitizado, sin el valor');
   });
 
   // ---- servidor HTTP real (puerto efímero), fetch a Gemini simulado ----
@@ -692,6 +732,27 @@ async function main() {
         })()
       `);
       assert(res.source === 'local', 'una recomendación con un sku fuera de los candidatos reales debería ser rechazada por el proxy y causar fallback automático a Local');
+    });
+  });
+
+  await check('END-TO-END (comercial, perfil privado): un precio ALTERADO por el "Gemini" simulado se rechaza y cae a Local, no se propaga al cliente', async () => {
+    const fakePriceAvailability = fakeGeminiOk('price-availability', {
+      disponible: true, precio: 999.99, precioLista: null, priceDifference: null, stock: null, estado: null, mensaje: null,
+    });
+    await withServer({ apiKey: 'k', fetchImpl: fakePriceAvailability }, async base => {
+      const sandbox = buildClientSandbox(base);
+      const run = code => vm.runInContext(code, sandbox, { filename: 'assert.js' });
+      const res = await run(`
+        (async function () {
+          const sku = String(DATA.products[0][0]);
+          // Proveedor comercial simulado (dataset sintético) con un precio real
+          // distinto del que "Gemini" va a intentar devolver — nunca es un dato de producción.
+          globalThis.COMMERCIAL_DATA = { bySku: { [sku]: { precio: 10.00, precioLista: null, stock: null, estado: null, priceDifference: null } } };
+          const ctx = ContextBuilder.build(0, { maxPerType: 300 });
+          return RemoteResponseProvider.priceAndAvailability(ctx);
+        })()
+      `);
+      assert(res.source === 'local', 'un precio que no coincide con el commercialContext real debería ser rechazado por el proxy y causar fallback automático a Local');
     });
   });
 

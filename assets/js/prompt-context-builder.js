@@ -36,7 +36,9 @@
 'use strict';
 
 const PromptContextBuilder = (function () {
-  const SCHEMA_VERSION = '1.0.0';
+  // 1.1.0: se añadió commercialContext.priceDifference (aditivo, retrocompatible
+  // — ningún consumidor existente leía ese campo, así que nada se rompe).
+  const SCHEMA_VERSION = '1.1.0';
 
   const ALTERNATIVE_TYPES = ['SUSTITUYE'];
   const CROSS_SELL_TYPES = ['COMPLEMENTA', 'MISMO_BENEFICIO', 'MISMA_AUDIENCIA', 'MISMO_INGREDIENTE'];
@@ -112,6 +114,10 @@ const PromptContextBuilder = (function () {
     return {
       precio: comercial.precio,
       precioLista: comercial.precioLista,
+      // Valor autoritativo tal cual lo expone ContextBuilder (Fase 3, Paso 1)
+      // — nunca derivado aquí por resta, para no introducir una semántica o
+      // un redondeo distintos del dato real del Dashboard.
+      priceDifference: comercial.priceDifference,
       stock: comercial.stock,
       estado: comercial.estado,
       disponibilidad: comercial.disponible,

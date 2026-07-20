@@ -2704,3 +2704,34 @@ formas válidas, los siete códigos de rechazo, filtrado de texto arbitrario,
 observabilidad sin datos sensibles y fallback end-to-end ante una
 recomendación sin `razon`. Todas las variables Gemini se anularon; no se
 realizó ninguna llamada real, staging, commit, push ni despliegue.
+
+# PERFIL PRIVADO — Catálogo y datos comerciales reales
+
+Ver [`docs/PRIVATE_PREVIEW.md`](PRIVATE_PREVIEW.md) para la especificación
+completa (arquitectura, frontera de privacidad, matriz de garantías por
+habilidad, despliegue en dos etapas, controles de acceso y rollback).
+
+Resumen de los cambios de código que introdujo esta fase:
+
+- `assets/js/prompt-context-builder.js`: `buildCommercialContext()` ahora
+  incluye `priceDifference` (valor autoritativo, no derivado).
+  `SCHEMA_VERSION` 1.0.0 → 1.1.0 (aditivo, retrocompatible).
+- `server/gemini-proxy-server.js`: `validateCommercialFieldsMatch()`
+  sustituye a la validación anterior de disponibilidad — ahora compara por
+  igualdad estricta los 6 campos comerciales de `price-availability`
+  (`disponible`, `precio`, `precioLista`, `priceDifference`, `stock`,
+  `estado`) contra el `PromptContext` real, con 6 códigos de razón cerrados
+  y sanitizados (`commercial_*_mismatch`).
+- `scripts/build-private-preview.js` (nuevo): genera, fuera de Git, el
+  artefacto de despliegue del perfil privado.
+
+QA offline sobre el mismo working tree: **16 suites de regresión existentes,
+213/213 checks** (39→40 en el proxy, 16→17 en prompt-context-builder por los
+campos nuevos) + **`scripts/verify-build-private-preview.js`, 9/9 checks**
+(fixtures 100% ficticias). Verificado además, contra `production/` real y sin
+imprimir ningún valor: el `PromptContext` de `price-availability` coincide
+exactamente con el snapshot real, y el fallback automático a Local funciona
+por HTTP real sin `GEMINI_API_KEY`. No se realizó ninguna llamada real a
+Gemini, ni despliegue a Vercel — ver `docs/PRIVATE_PREVIEW.md`, "Estado
+verificado", para el detalle exacto de qué quedó bloqueado por falta de
+credenciales en este entorno.

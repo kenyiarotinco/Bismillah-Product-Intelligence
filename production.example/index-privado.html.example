@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bismillah · Private AI Preview</title>
+<link rel="icon" type="image/png" sizes="32x32" href="assets/img/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="assets/img/favicon-16.png">
+<link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
+<meta name="robots" content="noindex, nofollow">
+<link rel="stylesheet" href="assets/css/styles.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;450;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+.private-ai-heading{min-width:0}
+.private-ai-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.private-ai-badge{display:inline-flex;align-items:center;padding:3px 9px;border:1px solid #BC4438;border-radius:999px;background:#F9E7E4;color:#7A241B;font-family:var(--ff-m);font-size:10px;font-weight:600;letter-spacing:.08em;line-height:1.4;white-space:nowrap}
+.private-ai-disclosure{color:var(--ink-3);font-size:12px;margin-top:4px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <div class="brand-mark"><img src="assets/img/logo-web.webp" alt="Bismillah" width="34" height="34"></div>
+      <h1>Bismillah<span>Product Intelligence</span></h1>
+    </div>
+    <button class="nav-btn on" data-view="panorama"><svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="1.5" width="5" height="7" rx="1"/><rect x="8.5" y="1.5" width="5" height="4" rx="1"/><rect x="8.5" y="7.5" width="5" height="6" rx="1"/><rect x="1.5" y="10.5" width="5" height="3" rx="1"/></svg>Panorama</button>
+    <button class="nav-btn" data-view="explorador"><svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6.5" cy="6.5" r="4.5"/><path d="m10 10 3.5 3.5"/></svg>Explorador</button>
+    <button class="nav-btn" data-view="p360"><svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7.5" cy="7.5" r="2"/><circle cx="2.5" cy="3" r="1.3"/><circle cx="12.5" cy="3" r="1.3"/><circle cx="2.5" cy="12" r="1.3"/><circle cx="12.5" cy="12" r="1.3"/><path d="M7.5 7.5 2.5 3m5 4.5L12.5 3m-5 4.5-5 4.5m5-4.5 5 4.5"/></svg>Producto 360</button>
+    <button class="nav-btn" data-view="motores"><svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 12V8m4 4V3m4 9V6m4 6V2" stroke-linecap="round"/></svg>Motores</button>
+    <div class="rail-foot">Catálogo comercial real<br>⚠ Acceso interno · solo equipo autorizado<br>Snapshot de precio y stock — no es tiempo real</div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div class="private-ai-heading">
+        <div class="private-ai-title-row"><h2 id="view-title">Panorama del grafo</h2><span class="private-ai-badge">PRIVATE AI</span></div>
+        <div class="sub" id="view-sub">Catálogo comercial real · proveedor remoto controlado con fallback local</div>
+        <div class="private-ai-disclosure" role="note">Precio, stock y estado provienen de un snapshot del Dashboard — no está sincronizado en tiempo real. Cada respuesta indica su proveedor real (gemini/local) junto al nombre de la habilidad.</div>
+      </div>
+      <div class="gsearch">
+        <svg width="14" height="14" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6.5" cy="6.5" r="4.5"/><path d="m10 10 3.5 3.5"/></svg>
+        <input id="gsearch-in" type="text" placeholder="Buscar producto, SKU o tag…" autocomplete="off" aria-label="Búsqueda global de productos">
+        <div class="gs-drop" id="gsearch-drop" role="listbox"></div>
+      </div>
+    </div>
+
+    <section class="view on" id="v-panorama"></section>
+    <section class="view" id="v-explorador"></section>
+    <section class="view" id="v-p360"></section>
+    <section class="view" id="v-motores"></section>
+  </main>
+</div>
+<!-- Este perfil solo activa el transporte remoto same-origin; no contiene credenciales. -->
+<script>
+const FEATURE_FLAGS = { remoteResponseProvider: true };
+const REMOTE_PROVIDER_CONFIG = { endpoint: '/api/copilot', timeoutMs: 30000 };
+</script>
+<script src="data.js"></script>
+<script src="commercial-data.js"></script>
+<script src="assets/js/context-builder.js"></script>
+<script src="assets/js/prompt-context-builder.js"></script>
+<script src="assets/js/commercial-data-provider.js"></script>
+<script src="assets/js/feature-flags.js"></script>
+<script src="assets/js/response-provider-contract.js"></script>
+<script src="assets/js/response-provider.js"></script>
+<script src="assets/js/providers/local-response-provider.js"></script>
+<script src="assets/js/providers/remote-response-provider.js"></script>
+<script src="assets/js/providers/ai-response-provider.js"></script>
+<script src="assets/js/app.js"></script>
+</body>
+</html>

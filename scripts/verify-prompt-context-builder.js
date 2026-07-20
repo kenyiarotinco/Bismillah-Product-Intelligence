@@ -104,9 +104,9 @@ async function main() {
     assert(JSON.stringify(keys) === JSON.stringify(expected), `productKnowledge inesperado: ${JSON.stringify(keys)}`);
   });
 
-  await check('commercialContext tiene exactamente los 5 campos esperados por la especificación', () => {
+  await check('commercialContext tiene exactamente los 6 campos esperados por la especificación (1.1.0: +priceDifference)', () => {
     const keys = run('Object.keys(__lastPC.commercialContext).sort()');
-    const expected = ['disponibilidad', 'estado', 'precio', 'precioLista', 'stock'].sort();
+    const expected = ['disponibilidad', 'estado', 'precio', 'precioLista', 'priceDifference', 'stock'].sort();
     assert(JSON.stringify(keys) === JSON.stringify(expected), `commercialContext inesperado: ${JSON.stringify(keys)}`);
   });
 
@@ -211,6 +211,7 @@ async function main() {
         return pc.commercialContext.disponibilidad === false
           && pc.commercialContext.precio === null
           && pc.commercialContext.precioLista === null
+          && pc.commercialContext.priceDifference === null
           && pc.commercialContext.stock === null
           && pc.commercialContext.estado === null;
       })()
@@ -227,11 +228,12 @@ async function main() {
         return pc.commercialContext.disponibilidad === true
           && pc.commercialContext.precio === 39.90
           && pc.commercialContext.precioLista === 45.00
+          && pc.commercialContext.priceDifference === 5.10
           && pc.commercialContext.stock === 120
           && pc.commercialContext.estado === 'Disponible';
       })()
     `);
-    assert(ok, 'commercialContext debería relayar fielmente un dato comercial real disponible');
+    assert(ok, 'commercialContext debería relayar fielmente un dato comercial real disponible, incluyendo priceDifference (1.1.0)');
   });
 
   await check('contexto inválido lanza sincrónicamente (error de programación, no un caso esperado)', () => {

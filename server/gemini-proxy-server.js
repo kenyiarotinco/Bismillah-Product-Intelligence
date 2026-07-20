@@ -44,7 +44,7 @@
  * disciplina que ya rige el resto del proyecto), y este archivo gana una
  * segunda capa de defensa que el prompt por sí solo no puede garantizar:
  * `validateResponseContract()` y las validaciones semánticas
- * `validateGroundedSkuUsage()`/`validateAvailabilityConsistency()`,
+ * `validateGroundedSkuUsage()`/`validateCommercialFieldsMatch()`,
  * ejecutadas DESPUÉS de recibir la respuesta del modelo, antes de
  * devolverla al cliente. Ver el comentario de cabecera de
  * gemini-prompt-builder.js para el porqué completo.
@@ -93,22 +93,6 @@ function validateGroundedSkuUsage(skill, promptContext, parsed) {
   }
 }
 
-/**
- * Segunda capa de defensa (Fase 4, Paso 5) para "Precio y disponibilidad":
- * si el PromptContext ya declara que no hay cobertura comercial
- * (`commercialContext.disponibilidad === false`), el modelo no puede
- * reportar disponibilidad de todas formas — sería fabricar exactamente el
- * tipo de dato (precio/stock) que este proyecto nunca ha permitido inventar
- * en ninguna de las cinco habilidades.
- */
-function validateAvailabilityConsistency(skill, promptContext, parsed) {
-  if (skill !== 'price-availability') return;
-  const comercial = promptContext && promptContext.commercialContext;
-  if (comercial && comercial.disponibilidad === false && parsed.disponible !== false) {
-    throw new Error('Gemini API: el modelo reportó disponibilidad cuando el PromptContext indicaba que no hay cobertura comercial.');
-  }
-}
-
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -129,9 +113,10 @@ function isStringArray(value) {
   return Array.isArray(value) && value.every(isNonEmptyString);
 }
 
-// Códigos operativos cerrados: describen únicamente qué regla estructural de
-// cross-sell falló. No contienen valores del modelo, PromptContext, SKU ni
-// nombres, así que son aptos para observabilidad sanitizada.
+// Códigos operativos cerrados: describen únicamente qué regla estructural
+// falló (cross-sell, o — perfil privado con datos comerciales reales —
+// price-availability). No contienen valores del modelo, PromptContext, SKU
+// ni nombres, así que son aptos para observabilidad sanitizada.
 const CONTRACT_REASON_CODES = new Set([
   'cross_recommendations_invalid',
   'cross_recommendation_invalid',
@@ -140,12 +125,64 @@ const CONTRACT_REASON_CODES = new Set([
   'cross_reason_invalid',
   'cross_message_unexpected',
   'cross_empty_message_invalid',
+  'commercial_disponibilidad_mismatch',
+  'commercial_precio_mismatch',
+  'commercial_precioLista_mismatch',
+  'commercial_priceDifference_mismatch',
+  'commercial_stock_mismatch',
+  'commercial_estado_mismatch',
 ]);
 
 function contractViolation(detail, reason) {
   const err = new Error(`Gemini API: la respuesta del modelo no cumple la forma esperada del contrato (${detail}).`);
   if (CONTRACT_REASON_CODES.has(reason)) err.contractReason = reason;
   throw err;
+}
+
+/**
+ * Validación estricta de los campos comerciales de "Precio y disponibilidad"
+ * (perfil privado con datos comerciales reales) — sustituye a la validación
+ * anterior, que solo comprobaba el caso disponible=false. Cualquier caso que
+ * esa cubría, este lo sigue cubriendo, ahora con un código de razón
+ * sanitizado en vez de un Error genérico sin código.
+ *
+ * Por qué igualdad estricta (`===`) y no solo "no contradice": el modelo no
+ * aporta nada legítimo alterando, redondeando o inventando un valor
+ * comercial que el propio PromptContext ya le entregó con certeza — así que
+ * cualquier discrepancia, por pequeña que sea, se trata como incumplimiento
+ * del contrato y dispara el fallback automático a Local en
+ * RemoteResponseProvider, igual que cualquier otro `contractViolation`.
+ *
+ * Alcance real (documentado, no asumido): esta validación cubre únicamente
+ * los campos ya tipados de `price-availability`. Las otras cuatro
+ * habilidades reciben el mismo `commercialContext` completo (es una
+ * propiedad de primer nivel del PromptContext, no oculta) pero devuelven
+ * texto libre — nada aquí impide que el modelo mencione un valor comercial
+ * dentro de ese texto. Ver docs/PRIVATE_PREVIEW.md para el detalle de esta
+ * limitación conocida y no resuelta en esta fase.
+ */
+function validateCommercialFieldsMatch(skill, promptContext, parsed) {
+  if (skill !== 'price-availability') return;
+  const comercial = promptContext && promptContext.commercialContext;
+  if (!comercial) return;
+  if (parsed.disponible !== comercial.disponibilidad) {
+    contractViolation('disponible no coincide con commercialContext.disponibilidad', 'commercial_disponibilidad_mismatch');
+  }
+  if (parsed.precio !== comercial.precio) {
+    contractViolation('precio no coincide con commercialContext.precio', 'commercial_precio_mismatch');
+  }
+  if (parsed.precioLista !== comercial.precioLista) {
+    contractViolation('precioLista no coincide con commercialContext.precioLista', 'commercial_precioLista_mismatch');
+  }
+  if (parsed.priceDifference !== comercial.priceDifference) {
+    contractViolation('priceDifference no coincide con commercialContext.priceDifference', 'commercial_priceDifference_mismatch');
+  }
+  if (parsed.stock !== comercial.stock) {
+    contractViolation('stock no coincide con commercialContext.stock', 'commercial_stock_mismatch');
+  }
+  if (parsed.estado !== comercial.estado) {
+    contractViolation('estado no coincide con commercialContext.estado', 'commercial_estado_mismatch');
+  }
 }
 
 function validateProductSummary(product, label) {
@@ -317,7 +354,7 @@ async function callGemini({ skill, promptContext, apiKey, model, timeoutMs, fetc
   }
   validateResponseContract(skill, parsed);
   validateGroundedSkuUsage(skill, promptContext, parsed);
-  validateAvailabilityConsistency(skill, promptContext, parsed);
+  validateCommercialFieldsMatch(skill, promptContext, parsed);
 
   // source/generatedAt los fija este servidor, no el modelo — la misma
   // disciplina que ya aplica LocalResponseProvider: metadata del sistema,
@@ -499,7 +536,7 @@ module.exports = {
   buildPrompt,
   isOriginAllowed,
   validateGroundedSkuUsage,
-  validateAvailabilityConsistency,
+  validateCommercialFieldsMatch,
   validateResponseContract,
   classifyGeminiError,
   contractReasonForLog,
