@@ -85,6 +85,16 @@ async function main() {
       'app.js debe seleccionar AIResponseProvider solo cuando el flag esté activo');
   });
 
+  await check('ai-preview identifica visualmente el entorno y comunica sus salvaguardas', () => {
+    const preview = fs.readFileSync(PREVIEW_INDEX, 'utf8');
+    assert(/class="ai-preview-badge">AI PREVIEW<\/span>/.test(preview),
+      'ai-preview debe mostrar el badge exacto AI PREVIEW');
+    assert(/Datos de demostración/.test(preview),
+      'ai-preview debe informar que utiliza datos de demostración');
+    assert(/fallback local automático/.test(preview),
+      'ai-preview debe informar que dispone de fallback local automático');
+  });
+
   await check('respuesta remota simulada a través de AIResponseProvider conserva source:"gemini"', async () => {
     let requestedEndpoint = null;
     const sandbox = freshSandbox((endpoint, options) => {
