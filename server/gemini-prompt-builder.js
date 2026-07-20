@@ -32,9 +32,11 @@
 // Mismo contrato ya documentado en response-provider.js — se repite aquí en
 // forma de instrucción para el modelo, no como una nueva fuente de verdad:
 // si ese contrato cambia, este mapa debe actualizarse junto con él.
+const COMPARE_PRODUCT_SUMMARY_SCHEMA = '{ "sku": "...", "nombre": "...", "universo": "...", "categoria": "...", "beneficios": ["..."], "etiquetas": ["..."], "relaciones": { "total": 0, "porTipo": [ { "tipo": "...", "cantidad": 0 } ] } }';
+
 const SKILL_SCHEMAS = {
   'explain-product': '{ "skill": "explain-product", "text": "<explicación en español, basada EXCLUSIVAMENTE en los datos de productKnowledge/commercialContext>" }',
-  'compare-products': '{ "skill": "compare-products", "productos": { "a": {}, "b": {} }, "similitudes": ["..."], "diferencias": ["..."] }',
+  'compare-products': `{ "skill": "compare-products", "productos": { "a": ${COMPARE_PRODUCT_SUMMARY_SCHEMA}, "b": ${COMPARE_PRODUCT_SUMMARY_SCHEMA} }, "similitudes": ["..."], "diferencias": ["..."] }`,
   'best-alternative': '{ "skill": "best-alternative", "encontrado": true, "alternativa": { "sku": "...", "nombre": "..." }, "afinidad": "Alta", "justificacion": "...", "mensaje": null }',
   'cross-sell': '{ "skill": "cross-sell", "recomendaciones": [ { "sku": "...", "nombre": "...", "razon": "..." } ], "mensaje": null }',
   'price-availability': '{ "skill": "price-availability", "disponible": true, "precio": 0, "precioLista": 0, "priceDifference": 0, "stock": 0, "estado": "...", "mensaje": null }',
@@ -46,7 +48,7 @@ const SKILL_SCHEMAS = {
 // y qué NO debe hacer con él.
 const SKILL_GROUNDING_HINTS = {
   'explain-product': 'Usa productKnowledge y commercialContext. Si commercialContext.disponibilidad es false, dilo honestamente en el texto sin inventar un precio ni un stock.',
-  'compare-products': 'El PromptContext trae DOS productos independientes en las claves "a" y "b" (cada una con su propio productKnowledge/commercialContext/alternatives/crossSell). Compara únicamente lo que ambos exponen — no mezcles datos de "a" con los de "b".',
+  'compare-products': 'El PromptContext trae DOS productos independientes en las claves "a" y "b" (cada una con su propio productKnowledge/commercialContext/alternatives/crossSell). Compara únicamente lo que ambos exponen — no mezcles datos de "a" con los de "b". En productos.a/productos.b copia todos los campos del resumen desde cada productKnowledge: sku=metadata.sku, nombre=nombre, universo=metadata.universo, categoria=familia, beneficios=beneficios, etiquetas=metadata.tags y relaciones=relaciones; no omitas arrays vacíos ni relaciones.porTipo.',
   'best-alternative': 'La alternativa que devuelvas debe ser EXACTAMENTE uno de los candidatos ya listados en "alternatives" (por su sku) — nunca sugieras un producto que no esté en esa lista, aunque te parezca más adecuado. Si "alternatives" está vacío, responde encontrado:false con un mensaje honesto explicando que no hay un sustituto elegible.',
   'cross-sell': 'Las recomendaciones que devuelvas deben ser EXCLUSIVAMENTE candidatos ya listados en "crossSell" (por su sku) — nunca agregues un producto que no esté en esa lista, aunque te parezca más adecuado. Si "crossSell" está vacío, responde con una lista vacía y un mensaje honesto.',
   'price-availability': 'Usa exclusivamente commercialContext. Si "disponibilidad" es false, "disponible" en tu respuesta también debe ser false y los campos numéricos deben ser null — nunca reportes disponibilidad o un precio que el PromptContext no confirma.',

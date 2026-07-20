@@ -76,6 +76,19 @@ function main() {
     assert(hint.includes('"a"') && hint.includes('"b"'), 'debería mencionar explícitamente las claves "a" y "b"');
   });
 
+  check('compare-products: schema e instrucción exigen los dos resúmenes completos que consume el renderizador', () => {
+    const schema = SKILL_SCHEMAS['compare-products'];
+    for (const field of ['sku', 'nombre', 'universo', 'categoria', 'beneficios', 'etiquetas', 'relaciones', 'total', 'porTipo']) {
+      const occurrences = (schema.match(new RegExp(`"${field}"`, 'g')) || []).length;
+      assert(occurrences === 2, `el campo "${field}" debería aparecer una vez para a y una vez para b`);
+    }
+    const hint = SKILL_GROUNDING_HINTS['compare-products'];
+    for (const mapping of ['metadata.sku', 'metadata.universo', 'metadata.tags', 'relaciones.porTipo']) {
+      assert(hint.includes(mapping), `la instrucción debería declarar el mapeo de ${mapping}`);
+    }
+    assert(/no omitas arrays vacíos/i.test(hint), 'la instrucción debería prohibir omitir arrays vacíos');
+  });
+
   check('el prompt es determinístico: mismo skill + mismo PromptContext producen el mismo prompt', () => {
     const ctx = { productKnowledge: { nombre: 'Estable' }, alternatives: [] };
     const a = buildPrompt('best-alternative', ctx);

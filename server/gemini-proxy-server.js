@@ -43,6 +43,7 @@
  * server/gemini-prompt-builder.js (una responsabilidad, un archivo — misma
  * disciplina que ya rige el resto del proyecto), y este archivo gana una
  * segunda capa de defensa que el prompt por sí solo no puede garantizar:
+ * `validateResponseContract()` y las validaciones semánticas
  * `validateGroundedSkuUsage()`/`validateAvailabilityConsistency()`,
  * ejecutadas DESPUÉS de recibir la respuesta del modelo, antes de
  * devolverla al cliente. Ver el comentario de cabecera de
@@ -108,6 +109,130 @@ function validateAvailabilityConsistency(skill, promptContext, parsed) {
   }
 }
 
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isNullableString(value) {
+  return value === null || typeof value === 'string';
+}
+
+function isNullableFiniteNumber(value) {
+  return value === null || (typeof value === 'number' && Number.isFinite(value));
+}
+
+function isStringArray(value) {
+  return Array.isArray(value) && value.every(isNonEmptyString);
+}
+
+function contractViolation(detail) {
+  throw new Error(`Gemini API: la respuesta del modelo no cumple la forma esperada del contrato (${detail}).`);
+}
+
+function validateProductSummary(product, label) {
+  if (!isRecord(product)) contractViolation(`${label} no es un objeto`);
+  if (!isNonEmptyString(product.sku)) contractViolation(`${label}.sku no es un string no vacío`);
+  if (!isNonEmptyString(product.nombre)) contractViolation(`${label}.nombre no es un string no vacío`);
+  if (!isNullableString(product.universo)) contractViolation(`${label}.universo no es string|null`);
+  if (!isNullableString(product.categoria)) contractViolation(`${label}.categoria no es string|null`);
+  if (!isStringArray(product.beneficios)) contractViolation(`${label}.beneficios no es string[]`);
+  if (!isStringArray(product.etiquetas)) contractViolation(`${label}.etiquetas no es string[]`);
+  if (!isRecord(product.relaciones)) contractViolation(`${label}.relaciones no es un objeto`);
+  if (typeof product.relaciones.total !== 'number' || !Number.isFinite(product.relaciones.total)) {
+    contractViolation(`${label}.relaciones.total no es un número finito`);
+  }
+  if (!Array.isArray(product.relaciones.porTipo)) contractViolation(`${label}.relaciones.porTipo no es un array`);
+  const invalidRelation = product.relaciones.porTipo.some(item =>
+    !isRecord(item) || !isNonEmptyString(item.tipo)
+    || typeof item.cantidad !== 'number' || !Number.isFinite(item.cantidad)
+  );
+  if (invalidRelation) contractViolation(`${label}.relaciones.porTipo contiene una entrada inválida`);
+}
+
+/**
+ * Valida la forma completa que consumen los cinco renderizadores del Copilot.
+ * Es una frontera server-side: una respuesta con `skill` correcto pero campos
+ * internos ausentes se rechaza antes de llegar al navegador, provocando el
+ * fallback ya existente de RemoteResponseProvider a LocalResponseProvider.
+ */
+function validateResponseContract(skill, parsed) {
+  if (!isRecord(parsed)) contractViolation('la raíz no es un objeto');
+  if (parsed.skill !== skill) contractViolation('skill no coincide');
+
+  if (skill === 'explain-product') {
+    if (!isNonEmptyString(parsed.text)) contractViolation('text no es un string no vacío');
+    return;
+  }
+
+  if (skill === 'compare-products') {
+    if (!isRecord(parsed.productos)) contractViolation('productos no es un objeto');
+    validateProductSummary(parsed.productos.a, 'productos.a');
+    validateProductSummary(parsed.productos.b, 'productos.b');
+    if (!isStringArray(parsed.similitudes)) contractViolation('similitudes no es string[]');
+    if (!isStringArray(parsed.diferencias)) contractViolation('diferencias no es string[]');
+    return;
+  }
+
+  if (skill === 'best-alternative') {
+    if (typeof parsed.encontrado !== 'boolean') contractViolation('encontrado no es boolean');
+    if (parsed.encontrado) {
+      if (!isRecord(parsed.alternativa)
+        || !isNonEmptyString(parsed.alternativa.sku)
+        || !isNonEmptyString(parsed.alternativa.nombre)) {
+        contractViolation('alternativa no contiene sku/nombre válidos');
+      }
+      if (!['Alta', 'Media'].includes(parsed.afinidad)) contractViolation('afinidad no es Alta|Media');
+      if (!isNonEmptyString(parsed.justificacion)) contractViolation('justificacion no es un string no vacío');
+      if (parsed.mensaje !== null) contractViolation('mensaje debe ser null cuando encontrado=true');
+    } else if (parsed.alternativa !== null || parsed.afinidad !== null || parsed.justificacion !== null
+      || !isNonEmptyString(parsed.mensaje)) {
+      contractViolation('campos inconsistentes cuando encontrado=false');
+    }
+    return;
+  }
+
+  if (skill === 'cross-sell') {
+    if (!Array.isArray(parsed.recomendaciones)) contractViolation('recomendaciones no es un array');
+    const invalidRecommendation = parsed.recomendaciones.some(item =>
+      !isRecord(item) || !isNonEmptyString(item.sku)
+      || !isNonEmptyString(item.nombre) || !isNonEmptyString(item.razon)
+    );
+    if (invalidRecommendation) contractViolation('recomendaciones contiene una entrada inválida');
+    if (parsed.recomendaciones.length > 0 && parsed.mensaje !== null) {
+      contractViolation('mensaje debe ser null cuando hay recomendaciones');
+    }
+    if (parsed.recomendaciones.length === 0 && !isNonEmptyString(parsed.mensaje)) {
+      contractViolation('mensaje debe explicar por qué no hay recomendaciones');
+    }
+    return;
+  }
+
+  if (skill === 'price-availability') {
+    if (typeof parsed.disponible !== 'boolean') contractViolation('disponible no es boolean');
+    for (const field of ['precio', 'precioLista', 'priceDifference', 'stock']) {
+      if (!isNullableFiniteNumber(parsed[field])) contractViolation(`${field} no es number|null`);
+    }
+    if (!isNullableString(parsed.estado) || !isNullableString(parsed.mensaje)) {
+      contractViolation('estado/mensaje no son string|null');
+    }
+    if (!parsed.disponible) {
+      const mustBeNull = ['precio', 'precioLista', 'priceDifference', 'stock', 'estado'];
+      if (mustBeNull.some(field => parsed[field] !== null) || !isNonEmptyString(parsed.mensaje)) {
+        contractViolation('campos inconsistentes cuando disponible=false');
+      }
+    } else if (parsed.mensaje !== null) {
+      contractViolation('mensaje debe ser null cuando disponible=true');
+    }
+    return;
+  }
+
+  contractViolation(`skill desconocido: ${skill}`);
+}
+
 /**
  * Llama a la API real de Gemini (generateContent) y normaliza la
  * respuesta a la forma del contrato de response-provider.js. `fetchImpl` es
@@ -164,9 +289,7 @@ async function callGemini({ skill, promptContext, apiKey, model, timeoutMs, fetc
   } catch (err) {
     throw new Error(`Gemini API: la respuesta del modelo no es JSON válido — ${err.message}`);
   }
-  if (!parsed || typeof parsed !== 'object' || parsed.skill !== skill) {
-    throw new Error('Gemini API: la respuesta del modelo no cumple la forma esperada del contrato (skill no coincide).');
-  }
+  validateResponseContract(skill, parsed);
   validateGroundedSkuUsage(skill, promptContext, parsed);
   validateAvailabilityConsistency(skill, promptContext, parsed);
 
@@ -344,6 +467,7 @@ module.exports = {
   isOriginAllowed,
   validateGroundedSkuUsage,
   validateAvailabilityConsistency,
+  validateResponseContract,
   classifyGeminiError,
   observeCopilotRequest,
   SKILL_SCHEMAS,

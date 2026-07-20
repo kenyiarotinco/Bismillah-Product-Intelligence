@@ -23,7 +23,8 @@ const path = require('path');
 const vm = require('vm');
 const {
   startServer, createRequestHandler, callGemini, buildPrompt, isOriginAllowed, SKILL_SCHEMAS,
-  validateGroundedSkuUsage, validateAvailabilityConsistency, classifyGeminiError, observeCopilotRequest,
+  validateResponseContract, validateGroundedSkuUsage, validateAvailabilityConsistency,
+  classifyGeminiError, observeCopilotRequest,
   DEFAULT_MODEL, DEFAULT_TIMEOUT_MS,
 } = require('../server/gemini-proxy-server.js');
 
@@ -52,6 +53,29 @@ function fakeGeminiOk(skill, extraFields = {}) {
       candidates: [{ content: { parts: [{ text: JSON.stringify(body) }] } }],
     }),
   });
+}
+
+function validProductSummary(sku = 'SKU-A', nombre = 'Producto A') {
+  return {
+    sku,
+    nombre,
+    universo: 'Bienestar',
+    categoria: 'B2.1 Citrato de magnesio',
+    beneficios: ['Sueño y Relajación'],
+    etiquetas: ['citrato'],
+    relaciones: { total: 1, porTipo: [{ tipo: 'MISMO_INGREDIENTE', cantidad: 1 }] },
+  };
+}
+
+function validCompareBody() {
+  return {
+    productos: {
+      a: validProductSummary('SKU-A', 'Producto A'),
+      b: validProductSummary('SKU-B', 'Producto B'),
+    },
+    similitudes: ['Similitud simulada.'],
+    diferencias: [],
+  };
 }
 
 async function withServer(options, fn) {
@@ -105,9 +129,8 @@ async function main() {
   await check('observabilidad: una comparación simulada con latencia controlada termina en 200 y registra solo metadatos seguros', async () => {
     const logger = capturingLogger();
     const response = await fakeGeminiOk('compare-products', {
-      productos: { a: {}, b: {} },
+      ...validCompareBody(),
       similitudes: ['detalle-de-respuesta-no-debe-loguearse'],
-      diferencias: [],
     })();
     await withServer({
       apiKey: 'clave-super-secreta-no-debe-loguearse',
@@ -284,6 +307,61 @@ async function main() {
     assert(threw && /no cumple la forma esperada/.test(threw.message), 'un skill que no coincide debería rechazarse');
   });
 
+  await check('validateResponseContract(): acepta formas completas y renderizables para las 5 habilidades', () => {
+    validateResponseContract('explain-product', {
+      skill: 'explain-product', text: 'Explicación válida.',
+    });
+    validateResponseContract('compare-products', {
+      skill: 'compare-products', ...validCompareBody(),
+    });
+    validateResponseContract('best-alternative', {
+      skill: 'best-alternative', encontrado: false, alternativa: null,
+      afinidad: null, justificacion: null, mensaje: 'No hay alternativa elegible.',
+    });
+    validateResponseContract('cross-sell', {
+      skill: 'cross-sell', recomendaciones: [], mensaje: 'No hay recomendaciones elegibles.',
+    });
+    validateResponseContract('price-availability', {
+      skill: 'price-availability', disponible: false, precio: null,
+      precioLista: null, priceDifference: null, stock: null, estado: null,
+      mensaje: 'Sin cobertura comercial.',
+    });
+  });
+
+  await check('validateResponseContract(): rechaza formas incompletas aunque el skill coincida (5 habilidades)', () => {
+    const malformedBySkill = {
+      'explain-product': { skill: 'explain-product' },
+      'compare-products': {
+        skill: 'compare-products', productos: { a: {}, b: {} },
+        similitudes: [], diferencias: [],
+      },
+      'best-alternative': { skill: 'best-alternative', encontrado: true },
+      'cross-sell': { skill: 'cross-sell', recomendaciones: [{}], mensaje: null },
+      'price-availability': { skill: 'price-availability', disponible: true, precio: 39.9 },
+    };
+    for (const [skill, malformed] of Object.entries(malformedBySkill)) {
+      let threw = null;
+      try { validateResponseContract(skill, malformed); } catch (error) { threw = error; }
+      assert(threw && /no cumple la forma esperada/.test(threw.message),
+        `[${skill}] una forma incompleta debería rechazarse como incumplimiento del contrato`);
+    }
+  });
+
+  await check('callGemini(): una comparación con skill correcto pero resúmenes vacíos se rechaza antes del navegador', async () => {
+    let threw = null;
+    try {
+      await callGemini({
+        skill: 'compare-products', promptContext: { a: {}, b: {} }, apiKey: 'k',
+        model: 'm', timeoutMs: 5000,
+        fetchImpl: fakeGeminiOk('compare-products', {
+          productos: { a: {}, b: {} }, similitudes: [], diferencias: [],
+        }),
+      });
+    } catch (error) { threw = error; }
+    assert(threw && /no cumple la forma esperada/.test(threw.message),
+      'el caso observado en producción debería rechazarse como incumplimiento estructural');
+  });
+
   await check('validateGroundedSkuUsage() (Paso 5): rechaza una "mejor alternativa" cuyo sku no está en promptContext.alternatives', () => {
     const promptContext = { alternatives: [{ sku: 'SKU-REAL', nombre: 'Real' }] };
     let threw = null;
@@ -367,7 +445,13 @@ async function main() {
   });
 
   await check('servidor real: ruta feliz — devuelve 200 con el cuerpo normalizado (source:"gemini") cuando "Gemini" responde correctamente', async () => {
-    await withServer({ apiKey: 'k', fetchImpl: fakeGeminiOk('price-availability', { disponible: true, precio: 39.9 }) }, async base => {
+    await withServer({
+      apiKey: 'k',
+      fetchImpl: fakeGeminiOk('price-availability', {
+        disponible: true, precio: 39.9, precioLista: null,
+        priceDifference: null, stock: null, estado: null, mensaje: null,
+      }),
+    }, async base => {
       const res = await fetch(`${base}/copilot`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ skill: 'price-availability', promptContext: { productKnowledge: {} } }) });
       assert(res.status === 200, `se esperaba 200, se obtuvo ${res.status}`);
       const body = await res.json();
@@ -419,6 +503,61 @@ async function main() {
     }
     return sandbox;
   }
+
+  await check('servidor real: una comparación incompleta responde 502 y registra contract_mismatch sin datos sensibles', async () => {
+    const logger = capturingLogger();
+    await withServer({
+      apiKey: 'clave-no-debe-aparecer',
+      logger,
+      fetchImpl: fakeGeminiOk('compare-products', {
+        productos: { a: {}, b: {} }, similitudes: ['CONTENIDO-PRIVADO'], diferencias: [],
+      }),
+    }, async base => {
+      const res = await fetch(`${base}/copilot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          skill: 'compare-products',
+          promptContext: { a: { dato: 'CONTEXTO-PRIVADO-A' }, b: { dato: 'CONTEXTO-PRIVADO-B' } },
+        }),
+      });
+      assert(res.status === 502, `una respuesta estructuralmente inválida debería ser 502, se obtuvo ${res.status}`);
+    });
+    assert(logger.entries.length === 1 && logger.entries[0].level === 'warn',
+      'el incumplimiento debería producir un único evento warn');
+    const event = parseObservation(logger.entries[0]);
+    assert(event.skill === 'compare-products' && event.outcome === 'error'
+      && event.category === 'contract_mismatch',
+    'el evento debería clasificar el fallo como contract_mismatch');
+    const serialized = JSON.stringify(logger.entries);
+    assert(!/clave-no-debe-aparecer|CONTEXTO-PRIVADO|CONTENIDO-PRIVADO/.test(serialized),
+      'la observabilidad no debería filtrar key, PromptContext ni respuesta inválida');
+  });
+
+  await check('END-TO-END (estructura): una comparación incompleta cae a Local y entrega una forma renderizable', async () => {
+    await withServer({
+      apiKey: 'k',
+      fetchImpl: fakeGeminiOk('compare-products', {
+        productos: { a: {}, b: {} }, similitudes: [], diferencias: [],
+      }),
+    }, async base => {
+      const sandbox = buildClientSandbox(base);
+      const run = code => vm.runInContext(code, sandbox, { filename: 'assert.js' });
+      const res = await run(`
+        (async function () {
+          const ctxA = ContextBuilder.build(0, { maxPerType: 300 });
+          const ctxB = ContextBuilder.build(1, { maxPerType: 300 });
+          return RemoteResponseProvider.compareProducts(ctxA, ctxB);
+        })()
+      `);
+      assert(res.source === 'local', 'el proxy debería provocar fallback automático a LocalResponseProvider');
+      assert(res.productos && res.productos.a && res.productos.b,
+        'el fallback debería entregar ambos resúmenes de producto');
+      assert(Array.isArray(res.productos.a.beneficios) && Array.isArray(res.productos.b.beneficios)
+        && Array.isArray(res.similitudes) && Array.isArray(res.diferencias),
+      'la respuesta local debería conservar la forma que espera el renderizador');
+    });
+  });
 
   await check('END-TO-END: RemoteResponseProvider, hablando HTTP real contra este proxy real, recibe y relaya la respuesta del "Gemini" simulado (5 habilidades)', async () => {
     // Sandbox "solo lectura" (sin servidor real) para calcular, de un producto
@@ -488,7 +627,7 @@ async function main() {
     for (const skill of ['explain-product', 'compare-products', 'best-alternative', 'cross-sell', 'price-availability']) {
       let fakeBody;
       if (skill === 'explain-product') fakeBody = { text: 'Explicación generada por Gemini simulado.' };
-      else if (skill === 'compare-products') fakeBody = { productos: { a: {}, b: {} }, similitudes: ['similitud simulada'], diferencias: [] };
+      else if (skill === 'compare-products') fakeBody = validCompareBody();
       else if (skill === 'best-alternative') fakeBody = { encontrado: true, alternativa: { sku: escenarios.alternativeSku, nombre: escenarios.alternativeNombre }, afinidad: 'Alta', justificacion: 'justificación simulada', mensaje: null };
       else if (skill === 'cross-sell') fakeBody = { recomendaciones: [{ sku: escenarios.crossSellSku, nombre: escenarios.crossSellNombre, razon: 'razón simulada' }], mensaje: null };
       else fakeBody = { disponible: false, precio: null, precioLista: null, priceDifference: null, stock: null, estado: null, mensaje: 'sin cobertura comercial (simulado)' };

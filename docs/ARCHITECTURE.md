@@ -1850,18 +1850,22 @@ misma información que ya viaja en el campo `skill` de cualquier respuesta
 del contrato. Sigue al pie de la letra el diseño del Paso 2: `userIntent`
 nunca se fabrica, solo se relaya lo que el llamador sabe con certeza.
 
-### Qué NO valida `RemoteResponseProvider` del cuerpo remoto, y por qué
+### Validación estructural en el proxy y fallback
 
-Solo se verifica `body.skill === skill` antes de confiar en la respuesta —
-no se valida cada campo interno (`text`, `similitudes`, `precio`, etc.)
-contra el contrato completo. Validar de más, contra un backend que hoy no
-existe, sería código especulativo sin nada real que lo ejercite. El
-`skill` es la única señal barata y universal (aplica a las 5 habilidades
-por igual) de que "esto parece una respuesta con sentido" — cualquier
-forma más profundamente incorrecta que igual declare el `skill` correcto
-quedaría, en la práctica, expuesta al usuario tal cual, la misma confianza
-que ya se deposita en `LocalResponseProvider` (no hay una segunda capa de
-validación de sus respuestas tampoco).
+`RemoteResponseProvider` conserva su responsabilidad mínima: comprueba que
+`body.skill === skill` y encapsula el fallback. La frontera que recibe la
+respuesta no confiable del modelo, `gemini-proxy-server.js`, valida además
+la forma completa que consumen los cinco renderizadores antes de responder
+HTTP 200. Un campo interno ausente o de tipo incorrecto se transforma en
+un error `contract_mismatch`; el endpoint responde 502 y el proveedor
+remoto ejecuta el método equivalente de `LocalResponseProvider`.
+
+Esta barrera se añadió después de observar una respuesta real con
+`skill:"compare-products"` pero resúmenes `productos.a`/`productos.b`
+incompletos: el transporte había funcionado, pero el renderizador no podía
+consumir la forma. La validación permanece centralizada en el backend
+compartido; no duplica lógica en el frontend ni modifica el contrato o la
+implementación de los proveedores locales.
 
 ### Fuera de alcance (deliberado, en este paso)
 
@@ -2244,15 +2248,20 @@ lo que convierte "el modelo puede alucinar un SKU" de un riesgo real en un
 fallback silencioso y seguro, verificado explícitamente en QA con un sku
 inventado que el proxy rechaza sin que llegue nunca al panel del Copilot.
 
-### Por qué la validación no cubre los 5 skills por igual
+### Validación estructural común y validación semántica específica
 
-`explain-product` y `compare-products` no tienen una lista cerrada de
-candidatos contra la cual validar (son texto/comparación libre sobre datos
-ya dados, no una elección entre opciones enumeradas) — no hay un "sku
-inventado" posible que detectar ahí de la misma forma. Extender la
-validación a esos dos habría significado inventar una regla sin una
-violación real y concreta que prevenir — la misma disciplina de "no
-construir código especulativo" que ya rige el resto del proyecto.
+Las cinco habilidades pasan primero por `validateResponseContract()`, que
+comprueba la estructura y los tipos necesarios para que la UI pueda
+renderizar la respuesta. En `compare-products` esto incluye los dos
+resúmenes completos, sus arrays y el desglose de relaciones.
+
+Después se aplican reglas semánticas solo donde existe una fuente cerrada
+contra la cual contrastar: `best-alternative` y `cross-sell` validan sus
+SKU contra las listas candidatas, y `price-availability` no puede
+contradecir `commercialContext.disponibilidad`. `explain-product` y la
+parte narrativa de `compare-products` no inventan una comprobación
+semántica adicional: quedan limitadas por el prompt y por la estructura
+validada.
 
 ### QA — Gemini Prompt Builder (nueva) y Gemini Proxy Server (ampliada)
 
@@ -2634,3 +2643,29 @@ Verificación adicional en navegador (perfil demo): sin errores de consola;
 Flujo completo probado en Producto 360: "Venta cruzada inteligente"
 (habilidad 5) etiquetada `local` en el panel, generando recomendaciones
 reales exactamente igual que antes de este paso.
+
+# HOTFIX — Validación estructural de respuestas AI Preview
+
+Una llamada real controlada de `compare-products` confirmó que el timeout
+ya no era el problema: Gemini respondió dentro de la ventana y el endpoint
+devolvió HTTP 200, pero el cuerpo tenía el `skill` correcto y resúmenes
+internos incompletos. La UI intentó leer esos campos y no pudo renderizar
+la comparación. Este hotfix cierra esa frontera sin modificar el frontend:
+
+- `gemini-prompt-builder.js` describe explícitamente los dos resúmenes
+  completos que debe devolver `compare-products` y su mapeo desde cada
+  `productKnowledge`.
+- `gemini-proxy-server.js` aplica `validateResponseContract()` a las cinco
+  habilidades antes de fijar `source:"gemini"` y responder HTTP 200.
+- Un cuerpo incompleto se clasifica como `contract_mismatch`, responde 502
+  y activa el fallback ya existente de `RemoteResponseProvider` hacia
+  `LocalResponseProvider`.
+- Los logs conservan solo metadatos sanitizados; nunca incluyen el cuerpo
+  defectuoso, `PromptContext`, nombres/SKU ni credenciales.
+
+QA offline sobre el mismo working tree: **16 suites, 205/205 checks**. La
+suite del prompt aprobó **18/18** y la del proxy **33/33**, incluyendo el
+caso exacto observado (`productos.a`/`productos.b` vacíos), la categoría
+`contract_mismatch` y el recorrido end-to-end hasta una respuesta local
+renderizable. Todas las variables Gemini se anularon durante la regresión;
+no se realizó ninguna llamada real, commit, push ni despliegue.

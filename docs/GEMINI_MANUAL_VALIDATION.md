@@ -86,7 +86,7 @@ Skills válidos: `explain-product`, `compare-products`, `best-alternative`,
 | HTTP 502, "Gemini API respondió 400/403" | Key inválida o sin permisos | Revisa la key en Google AI Studio |
 | HTTP 502, "Gemini API respondió 429" | Límite de cuota/tasa alcanzado | Espera o revisa tu cuota en Google Cloud |
 | HTTP 502, "tiempo de espera agotado" | Timeout (`GEMINI_TIMEOUT_MS`, default 25000ms) | Revisa la categoría sanitizada en Vercel antes de ajustar `GEMINI_TIMEOUT_MS` |
-| HTTP 502, "no cumple la forma esperada del contrato" | El modelo no devolvió el `skill` esperado | Poco común; suele resolverse reintentando |
+| HTTP 502, "no cumple la forma esperada del contrato" | El modelo devolvió otro `skill` o una estructura interna incompleta/incompatible | El proxy la rechaza antes del navegador y `RemoteResponseProvider` cae automáticamente a Local |
 | HTTP 502, "no está entre los candidatos provistos" | El modelo eligió un SKU fuera de `alternatives`/`crossSell` (grounding, Fase 4 Paso 5) | Esperado ocasionalmente; el fallback a Local es exactamente la protección diseñada para esto |
 | HTTP 502, "reportó disponibilidad cuando..." | El modelo contradijo `commercialContext.disponibilidad` | Misma protección de grounding que el caso anterior |
 
@@ -105,6 +105,9 @@ Cada invocación válida de `/api/copilot` emite una única línea con prefijo
 Los logs nunca incluyen la API key, `PromptContext`, nombres o SKU, el texto
 generado ni el mensaje interno del proveedor. La escritura del log es
 best-effort: un fallo del logger no altera la respuesta ni el fallback.
+Una respuesta que conserve el `skill` correcto pero omita campos requeridos
+también se registra como `contract_mismatch`; nunca se registra el cuerpo
+defectuoso.
 
 ## Paso 2 — Validación visual en el navegador (opcional, más profunda)
 
