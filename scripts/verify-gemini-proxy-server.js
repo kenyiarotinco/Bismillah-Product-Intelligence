@@ -24,7 +24,7 @@ const vm = require('vm');
 const {
   startServer, createRequestHandler, callGemini, buildPrompt, isOriginAllowed, SKILL_SCHEMAS,
   validateResponseContract, validateGroundedSkuUsage, validateAvailabilityConsistency,
-  classifyGeminiError, observeCopilotRequest,
+  classifyGeminiError, contractReasonForLog, observeCopilotRequest,
   DEFAULT_MODEL, DEFAULT_TIMEOUT_MS,
 } = require('../server/gemini-proxy-server.js');
 
@@ -124,6 +124,15 @@ async function main() {
     assert(classifyGeminiError(new Error('Gemini API: la respuesta del modelo no cumple la forma esperada')) === 'contract_mismatch', 'debería clasificar contrato');
     assert(classifyGeminiError(new Error('Gemini API: sku no está entre los candidatos')) === 'grounding_rejected', 'debería clasificar grounding');
     assert(classifyGeminiError(new Error('detalle desconocido')) === 'unknown', 'debería usar unknown como cierre seguro');
+  });
+
+  await check('contractReasonForLog solo acepta códigos cerrados y rechaza texto arbitrario', () => {
+    assert(contractReasonForLog({ contractReason: 'cross_reason_invalid' }) === 'cross_reason_invalid',
+      'debería aceptar un código estructural conocido');
+    assert(contractReasonForLog({ contractReason: 'SKU-PRIVADO-o-mensaje-del-modelo' }) === null,
+      'no debería relajar texto arbitrario hacia observabilidad');
+    assert(contractReasonForLog(new Error('detalle interno')) === null,
+      'un error sin código cerrado no debería producir reason');
   });
 
   await check('observabilidad: una comparación simulada con latencia controlada termina en 200 y registra solo metadatos seguros', async () => {
@@ -321,6 +330,11 @@ async function main() {
     validateResponseContract('cross-sell', {
       skill: 'cross-sell', recomendaciones: [], mensaje: 'No hay recomendaciones elegibles.',
     });
+    validateResponseContract('cross-sell', {
+      skill: 'cross-sell',
+      recomendaciones: [{ sku: 'SKU-A', nombre: 'Producto A', razon: 'Complemento válido.' }],
+      mensaje: null,
+    });
     validateResponseContract('price-availability', {
       skill: 'price-availability', disponible: false, precio: null,
       precioLista: null, priceDifference: null, stock: null, estado: null,
@@ -344,6 +358,28 @@ async function main() {
       try { validateResponseContract(skill, malformed); } catch (error) { threw = error; }
       assert(threw && /no cumple la forma esperada/.test(threw.message),
         `[${skill}] una forma incompleta debería rechazarse como incumplimiento del contrato`);
+    }
+  });
+
+  await check('validateResponseContract(): cross-sell asigna un código seguro y específico a cada fallo estructural', () => {
+    const cases = [
+      [{ skill: 'cross-sell', recomendaciones: null, mensaje: null }, 'cross_recommendations_invalid'],
+      [{ skill: 'cross-sell', recomendaciones: [null], mensaje: null }, 'cross_recommendation_invalid'],
+      [{ skill: 'cross-sell', recomendaciones: [{ sku: '', nombre: 'Producto', razon: 'Razón' }], mensaje: null }, 'cross_sku_invalid'],
+      [{ skill: 'cross-sell', recomendaciones: [{ sku: 'SKU', nombre: '', razon: 'Razón' }], mensaje: null }, 'cross_name_invalid'],
+      [{ skill: 'cross-sell', recomendaciones: [{ sku: 'SKU', nombre: 'Producto', razon: '' }], mensaje: null }, 'cross_reason_invalid'],
+      [{ skill: 'cross-sell', recomendaciones: [{ sku: 'SKU', nombre: 'Producto', razon: 'Razón' }], mensaje: 'sobrante' }, 'cross_message_unexpected'],
+      [{ skill: 'cross-sell', recomendaciones: [], mensaje: null }, 'cross_empty_message_invalid'],
+    ];
+    for (const [body, expectedReason] of cases) {
+      let threw = null;
+      try { validateResponseContract('cross-sell', body); } catch (error) { threw = error; }
+      assert(threw && /no cumple la forma esperada/.test(threw.message),
+        `[${expectedReason}] debería rechazarse como contract_mismatch`);
+      assert(threw.contractReason === expectedReason,
+        `se esperaba contractReason:${expectedReason}, se obtuvo ${threw && threw.contractReason}`);
+      assert(contractReasonForLog(threw) === expectedReason,
+        `[${expectedReason}] debería ser apto para el log sanitizado`);
     }
   });
 
@@ -534,6 +570,40 @@ async function main() {
       'la observabilidad no debería filtrar key, PromptContext ni respuesta inválida');
   });
 
+  await check('servidor real: cross-sell incompleto registra reason cerrado sin cuerpo, PromptContext ni secretos', async () => {
+    const logger = capturingLogger();
+    await withServer({
+      apiKey: 'CLAVE-PRIVADA-NO-LOG',
+      logger,
+      fetchImpl: fakeGeminiOk('cross-sell', {
+        recomendaciones: [{ sku: 'SKU-PRIVADO', nombre: 'NOMBRE-PRIVADO' }],
+        mensaje: null,
+      }),
+    }, async base => {
+      const res = await fetch(`${base}/copilot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          skill: 'cross-sell',
+          promptContext: { crossSell: [{ sku: 'SKU-PRIVADO', nombre: 'NOMBRE-PRIVADO' }], dato: 'CONTEXTO-PRIVADO' },
+        }),
+      });
+      assert(res.status === 502, `cross-sell incompleto debería responder 502, se obtuvo ${res.status}`);
+    });
+    assert(logger.entries.length === 1 && logger.entries[0].level === 'warn',
+      'el incumplimiento debería producir un único evento warn');
+    const event = parseObservation(logger.entries[0]);
+    assert(event.skill === 'cross-sell' && event.outcome === 'error'
+      && event.category === 'contract_mismatch' && event.reason === 'cross_reason_invalid',
+    'el evento debería incluir únicamente el código cerrado del campo que falló');
+    assert(JSON.stringify(Object.keys(event).sort())
+      === JSON.stringify(['category', 'durationMs', 'event', 'outcome', 'reason', 'skill']),
+    'el evento no debería incluir campos adicionales');
+    const serialized = JSON.stringify(logger.entries);
+    assert(!/CLAVE-PRIVADA|SKU-PRIVADO|NOMBRE-PRIVADO|CONTEXTO-PRIVADO/.test(serialized),
+      'el log no debería incluir key, SKU, nombre, PromptContext ni respuesta');
+  });
+
   await check('END-TO-END (estructura): una comparación incompleta cae a Local y entrega una forma renderizable', async () => {
     await withServer({
       apiKey: 'k',
@@ -556,6 +626,29 @@ async function main() {
       assert(Array.isArray(res.productos.a.beneficios) && Array.isArray(res.productos.b.beneficios)
         && Array.isArray(res.similitudes) && Array.isArray(res.diferencias),
       'la respuesta local debería conservar la forma que espera el renderizador');
+    });
+  });
+
+  await check('END-TO-END (cross-sell): una recomendación sin razon cae a Local y conserva recomendaciones renderizables', async () => {
+    await withServer({
+      apiKey: 'k',
+      fetchImpl: fakeGeminiOk('cross-sell', {
+        recomendaciones: [{ sku: 'SKU-SIMULADO', nombre: 'Producto simulado' }],
+        mensaje: null,
+      }),
+    }, async base => {
+      const sandbox = buildClientSandbox(base);
+      const run = code => vm.runInContext(code, sandbox, { filename: 'assert.js' });
+      const res = await run(`
+        (async function () {
+          const ctx = ContextBuilder.build(52, { maxPerType: 300 });
+          return RemoteResponseProvider.crossSell(ctx);
+        })()
+      `);
+      assert(res.source === 'local', 'una recomendación incompleta debería activar el fallback local');
+      assert(Array.isArray(res.recomendaciones), 'el fallback debería conservar recomendaciones como array');
+      assert(res.recomendaciones.every(item => item.sku && item.nombre && item.razon),
+        'cada recomendación local debería conservar sku, nombre y razon renderizables');
     });
   });
 

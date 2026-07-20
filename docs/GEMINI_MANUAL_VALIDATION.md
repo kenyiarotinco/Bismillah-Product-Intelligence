@@ -98,7 +98,9 @@ funcionando como se diseñó.
 
 Cada invocación válida de `/api/copilot` emite una única línea con prefijo
 `[copilot]`. El JSON contiene solamente `event`, `skill`, `outcome`,
-`durationMs` y, cuando hay error, `category`. Las categorías posibles son
+`durationMs` y, cuando hay error, `category`. Un `contract_mismatch` de
+`cross-sell` puede añadir `reason`, siempre elegido de una lista cerrada de
+códigos estructurales seguros. Las categorías posibles son
 `timeout`, `upstream_http`, `network`, `invalid_response`,
 `contract_mismatch`, `grounding_rejected` y `unknown`.
 
@@ -108,6 +110,12 @@ best-effort: un fallo del logger no altera la respuesta ni el fallback.
 Una respuesta que conserve el `skill` correcto pero omita campos requeridos
 también se registra como `contract_mismatch`; nunca se registra el cuerpo
 defectuoso.
+
+Los únicos valores posibles de `reason` son:
+`cross_recommendations_invalid`, `cross_recommendation_invalid`,
+`cross_sku_invalid`, `cross_name_invalid`, `cross_reason_invalid`,
+`cross_message_unexpected` y `cross_empty_message_invalid`. Ninguno contiene
+valores devueltos por el modelo; un texto arbitrario nunca se relaya al log.
 
 ## Paso 2 — Validación visual en el navegador (opcional, más profunda)
 

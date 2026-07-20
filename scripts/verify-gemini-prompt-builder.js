@@ -65,6 +65,22 @@ function main() {
     assert(/nunca agregues/i.test(hint), 'debería prohibir explícitamente agregar algo fuera de esa lista');
   });
 
+  check('cross-sell: schema e instrucción declaran las dos variantes y todas las claves obligatorias', () => {
+    const schema = SKILL_SCHEMAS['cross-sell'];
+    assert(/Con recomendaciones/.test(schema) && /Sin candidatos elegibles/.test(schema),
+      'el schema debería distinguir explícitamente las variantes con y sin recomendaciones');
+    assert(schema.includes('"recomendaciones": []') && schema.includes('"mensaje": null'),
+      'el schema debería mostrar lista vacía y mensaje null en sus variantes respectivas');
+    const hint = SKILL_GROUNDING_HINTS['cross-sell'];
+    for (const field of ['"sku"', '"nombre"', '"razon"', '"mensaje"']) {
+      assert(hint.includes(field), `la instrucción debería nombrar explícitamente ${field}`);
+    }
+    assert(/no traduzcas, acentúes ni renombres/i.test(hint),
+      'la instrucción debería prohibir renombrar las claves del contrato');
+    assert(/mensaje.*null.*elementos/i.test(hint) && /recomendaciones:\[\].*mensaje.*string no vacío/i.test(hint),
+      'la instrucción debería fijar la relación condicional entre recomendaciones y mensaje');
+  });
+
   check('price-availability: la instrucción de grounding exige consistencia con commercialContext.disponibilidad', () => {
     const hint = SKILL_GROUNDING_HINTS['price-availability'];
     assert(/disponibilidad/.test(hint), 'debería nombrar explícitamente el campo "disponibilidad"');

@@ -129,8 +129,23 @@ function isStringArray(value) {
   return Array.isArray(value) && value.every(isNonEmptyString);
 }
 
-function contractViolation(detail) {
-  throw new Error(`Gemini API: la respuesta del modelo no cumple la forma esperada del contrato (${detail}).`);
+// Códigos operativos cerrados: describen únicamente qué regla estructural de
+// cross-sell falló. No contienen valores del modelo, PromptContext, SKU ni
+// nombres, así que son aptos para observabilidad sanitizada.
+const CONTRACT_REASON_CODES = new Set([
+  'cross_recommendations_invalid',
+  'cross_recommendation_invalid',
+  'cross_sku_invalid',
+  'cross_name_invalid',
+  'cross_reason_invalid',
+  'cross_message_unexpected',
+  'cross_empty_message_invalid',
+]);
+
+function contractViolation(detail, reason) {
+  const err = new Error(`Gemini API: la respuesta del modelo no cumple la forma esperada del contrato (${detail}).`);
+  if (CONTRACT_REASON_CODES.has(reason)) err.contractReason = reason;
+  throw err;
 }
 
 function validateProductSummary(product, label) {
@@ -196,17 +211,28 @@ function validateResponseContract(skill, parsed) {
   }
 
   if (skill === 'cross-sell') {
-    if (!Array.isArray(parsed.recomendaciones)) contractViolation('recomendaciones no es un array');
-    const invalidRecommendation = parsed.recomendaciones.some(item =>
-      !isRecord(item) || !isNonEmptyString(item.sku)
-      || !isNonEmptyString(item.nombre) || !isNonEmptyString(item.razon)
-    );
-    if (invalidRecommendation) contractViolation('recomendaciones contiene una entrada inválida');
+    if (!Array.isArray(parsed.recomendaciones)) {
+      contractViolation('recomendaciones no es un array', 'cross_recommendations_invalid');
+    }
+    for (const item of parsed.recomendaciones) {
+      if (!isRecord(item)) {
+        contractViolation('recomendaciones contiene una entrada que no es objeto', 'cross_recommendation_invalid');
+      }
+      if (!isNonEmptyString(item.sku)) {
+        contractViolation('recomendaciones contiene un sku inválido', 'cross_sku_invalid');
+      }
+      if (!isNonEmptyString(item.nombre)) {
+        contractViolation('recomendaciones contiene un nombre inválido', 'cross_name_invalid');
+      }
+      if (!isNonEmptyString(item.razon)) {
+        contractViolation('recomendaciones contiene una razon inválida', 'cross_reason_invalid');
+      }
+    }
     if (parsed.recomendaciones.length > 0 && parsed.mensaje !== null) {
-      contractViolation('mensaje debe ser null cuando hay recomendaciones');
+      contractViolation('mensaje debe ser null cuando hay recomendaciones', 'cross_message_unexpected');
     }
     if (parsed.recomendaciones.length === 0 && !isNonEmptyString(parsed.mensaje)) {
-      contractViolation('mensaje debe explicar por qué no hay recomendaciones');
+      contractViolation('mensaje debe explicar por qué no hay recomendaciones', 'cross_empty_message_invalid');
     }
     return;
   }
@@ -332,6 +358,10 @@ function classifyGeminiError(err) {
   return 'unknown';
 }
 
+function contractReasonForLog(err) {
+  return err && CONTRACT_REASON_CODES.has(err.contractReason) ? err.contractReason : null;
+}
+
 /**
  * Emite una sola línea JSON apta para Vercel Runtime Logs. Solo incluye
  * metadatos técnicos mínimos: nunca PromptContext, respuestas,
@@ -422,12 +452,15 @@ function createRequestHandler({ apiKey, model, timeoutMs, allowedOrigin, fetchIm
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (err) {
-      observeCopilotRequest(logger, 'warn', {
+      const event = {
         skill,
         outcome: 'error',
         category: classifyGeminiError(err),
         durationMs: Math.max(0, Date.now() - startedAt),
-      });
+      };
+      const contractReason = contractReasonForLog(err);
+      if (event.category === 'contract_mismatch' && contractReason) event.reason = contractReason;
+      observeCopilotRequest(logger, 'warn', event);
       res.writeHead(502, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message }));
     }
@@ -469,6 +502,7 @@ module.exports = {
   validateAvailabilityConsistency,
   validateResponseContract,
   classifyGeminiError,
+  contractReasonForLog,
   observeCopilotRequest,
   SKILL_SCHEMAS,
   DEFAULT_MODEL,

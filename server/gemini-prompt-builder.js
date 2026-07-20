@@ -38,7 +38,7 @@ const SKILL_SCHEMAS = {
   'explain-product': '{ "skill": "explain-product", "text": "<explicación en español, basada EXCLUSIVAMENTE en los datos de productKnowledge/commercialContext>" }',
   'compare-products': `{ "skill": "compare-products", "productos": { "a": ${COMPARE_PRODUCT_SUMMARY_SCHEMA}, "b": ${COMPARE_PRODUCT_SUMMARY_SCHEMA} }, "similitudes": ["..."], "diferencias": ["..."] }`,
   'best-alternative': '{ "skill": "best-alternative", "encontrado": true, "alternativa": { "sku": "...", "nombre": "..." }, "afinidad": "Alta", "justificacion": "...", "mensaje": null }',
-  'cross-sell': '{ "skill": "cross-sell", "recomendaciones": [ { "sku": "...", "nombre": "...", "razon": "..." } ], "mensaje": null }',
+  'cross-sell': 'Usa EXACTAMENTE una de estas dos formas. Con recomendaciones: { "skill": "cross-sell", "recomendaciones": [ { "sku": "...", "nombre": "...", "razon": "..." } ], "mensaje": null }. Sin candidatos elegibles: { "skill": "cross-sell", "recomendaciones": [], "mensaje": "<explicación honesta en español>" }',
   'price-availability': '{ "skill": "price-availability", "disponible": true, "precio": 0, "precioLista": 0, "priceDifference": 0, "stock": 0, "estado": "...", "mensaje": null }',
 };
 
@@ -50,7 +50,7 @@ const SKILL_GROUNDING_HINTS = {
   'explain-product': 'Usa productKnowledge y commercialContext. Si commercialContext.disponibilidad es false, dilo honestamente en el texto sin inventar un precio ni un stock.',
   'compare-products': 'El PromptContext trae DOS productos independientes en las claves "a" y "b" (cada una con su propio productKnowledge/commercialContext/alternatives/crossSell). Compara únicamente lo que ambos exponen — no mezcles datos de "a" con los de "b". En productos.a/productos.b copia todos los campos del resumen desde cada productKnowledge: sku=metadata.sku, nombre=nombre, universo=metadata.universo, categoria=familia, beneficios=beneficios, etiquetas=metadata.tags y relaciones=relaciones; no omitas arrays vacíos ni relaciones.porTipo.',
   'best-alternative': 'La alternativa que devuelvas debe ser EXACTAMENTE uno de los candidatos ya listados en "alternatives" (por su sku) — nunca sugieras un producto que no esté en esa lista, aunque te parezca más adecuado. Si "alternatives" está vacío, responde encontrado:false con un mensaje honesto explicando que no hay un sustituto elegible.',
-  'cross-sell': 'Las recomendaciones que devuelvas deben ser EXCLUSIVAMENTE candidatos ya listados en "crossSell" (por su sku) — nunca agregues un producto que no esté en esa lista, aunque te parezca más adecuado. Si "crossSell" está vacío, responde con una lista vacía y un mensaje honesto.',
+  'cross-sell': 'Las recomendaciones que devuelvas deben ser EXCLUSIVAMENTE candidatos ya listados en "crossSell". Para cada recomendación copia exactamente "sku" y "nombre" del candidato y agrega "razon" como string no vacío; no traduzcas, acentúes ni renombres esas tres claves. Incluye siempre "mensaje": debe ser null cuando recomendaciones tenga elementos. Si no hay candidatos elegibles, responde recomendaciones:[] y "mensaje" como string no vacío explicándolo honestamente. Nunca agregues un producto que no esté en "crossSell".',
   'price-availability': 'Usa exclusivamente commercialContext. Si "disponibilidad" es false, "disponible" en tu respuesta también debe ser false y los campos numéricos deben ser null — nunca reportes disponibilidad o un precio que el PromptContext no confirma.',
 };
 

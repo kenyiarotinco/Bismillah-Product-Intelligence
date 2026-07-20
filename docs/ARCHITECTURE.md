@@ -2669,3 +2669,38 @@ caso exacto observado (`productos.a`/`productos.b` vacíos), la categoría
 `contract_mismatch` y el recorrido end-to-end hasta una respuesta local
 renderizable. Todas las variables Gemini se anularon durante la regresión;
 no se realizó ninguna llamada real, commit, push ni despliegue.
+
+# HOTFIX — Contrato de cross-sell y diagnóstico seguro
+
+La validación real controlada de las cinco habilidades cerró correctamente
+el recorrido de seguridad: `cross-sell` recibió una respuesta de Gemini
+estructuralmente incompatible, el proxy respondió 502 y la UI mostró el
+fallback local sin error. El evento sanitizado solo indicaba
+`category:"contract_mismatch"`, suficiente para proteger al usuario pero no
+para distinguir qué regla del contrato había fallado.
+
+Este hotfix refuerza esa frontera sin relajarla:
+
+- El prompt de `cross-sell` muestra explícitamente sus dos formas válidas:
+  recomendaciones no vacías con `mensaje:null`, o lista vacía con un mensaje
+  explicativo no vacío.
+- Cada recomendación debe conservar exactamente las claves `sku`, `nombre`
+  y `razon`; el prompt prohíbe traducir, acentuar o renombrar esas claves.
+- El validador conserva el mismo rechazo 502/fallback, pero asigna un código
+  cerrado a cada incumplimiento de `cross-sell`.
+- Solo ese código puede aparecer como `reason` en el evento sanitizado. El
+  cuerpo del modelo, `PromptContext`, nombres, SKU, credenciales y mensajes
+  internos continúan fuera de los logs.
+
+Los códigos permitidos son `cross_recommendations_invalid`,
+`cross_recommendation_invalid`, `cross_sku_invalid`, `cross_name_invalid`,
+`cross_reason_invalid`, `cross_message_unexpected` y
+`cross_empty_message_invalid`. `contractReasonForLog()` rechaza cualquier
+otro texto, aunque venga colocado artificialmente en un error.
+
+QA offline sobre el mismo working tree: **16 suites, 210/210 checks**. La
+suite del prompt aprobó **19/19** y la del proxy **37/37**, incluyendo ambas
+formas válidas, los siete códigos de rechazo, filtrado de texto arbitrario,
+observabilidad sin datos sensibles y fallback end-to-end ante una
+recomendación sin `razon`. Todas las variables Gemini se anularon; no se
+realizó ninguna llamada real, staging, commit, push ni despliegue.
