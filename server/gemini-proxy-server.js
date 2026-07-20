@@ -187,7 +187,7 @@ function isOriginAllowed(origin, allowedOrigin) {
   return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
 }
 
-function createRequestHandler({ apiKey, model, timeoutMs, allowedOrigin, fetchImpl }) {
+function createRequestHandler({ apiKey, model, timeoutMs, allowedOrigin, fetchImpl, expectedPath = COPILOT_PATH }) {
   return async function handleRequest(req, res) {
     const origin = req.headers.origin;
     if (isOriginAllowed(origin, allowedOrigin)) {
@@ -203,11 +203,29 @@ function createRequestHandler({ apiKey, model, timeoutMs, allowedOrigin, fetchIm
       return;
     }
 
-    const url = (req.url || '').split('?')[0];
-    if (req.method !== 'POST' || url !== COPILOT_PATH) {
+    // `expectedPath` (opcional, default COPILOT_PATH) hace que este mismo
+    // handler sirva tanto al servidor local (donde SÍ hace falta distinguir
+    // /copilot de cualquier otra ruta, porque http.createServer() recibe
+    // TODAS las rutas del proceso) como a un entorno serverless — Vercel,
+    // por ejemplo — donde el enrutamiento de la plataforma ya garantiza que
+    // solo las peticiones a la función correcta llegan aquí, así que exigir
+    // una ruta interna exacta sería redundante. Pasar `expectedPath: null`
+    // (ver api/copilot.js) desactiva ese chequeo y solo exige POST.
+    // Retrocompatible: ningún llamador existente (startServer(), la suite de
+    // QA) pasa `expectedPath`, así que conservan el chequeo `/copilot` exacto
+    // de siempre, sin cambio de comportamiento.
+    if (req.method !== 'POST') {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'not found' }));
       return;
+    }
+    if (expectedPath !== null) {
+      const url = (req.url || '').split('?')[0];
+      if (url !== expectedPath) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+        return;
+      }
     }
 
     if (!apiKey) {

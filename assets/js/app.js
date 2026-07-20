@@ -328,15 +328,14 @@ const COPILOT_SKILLS = [
 
 // Proveedor activo del AI Sales Copilot. Gobernado por el feature flag
 // `remoteResponseProvider` (Fase 4, Paso 3 — ver assets/js/feature-flags.js):
-// ningún perfil de este repositorio lo habilita hoy, así que esta línea
-// sigue seleccionando LocalResponseProvider exactamente como antes de ese
-// paso — cero cambio de comportamiento. Habilitar el proveedor remoto en un
-// despliegue futuro no requiere tocar esta línea ni ninguna otra parte del
-// sistema: solo definir `FEATURE_FLAGS = { remoteResponseProvider: true }`
-// y `REMOTE_PROVIDER_CONFIG` antes de este script — ver
-// docs/ARCHITECTURE.md.
+// La raíz no define el flag, por lo que sigue seleccionando
+// LocalResponseProvider exactamente como antes. Un perfil que sí lo habilite
+// usa AIResponseProvider, la cara pública que delega el transporte en
+// RemoteResponseProvider y conserva el fallback local. Solo necesita definir
+// `FEATURE_FLAGS = { remoteResponseProvider: true }` y
+// `REMOTE_PROVIDER_CONFIG` antes de este script.
 ResponseProvider.use(
-  FeatureFlags.isEnabled('remoteResponseProvider') ? RemoteResponseProvider : LocalResponseProvider
+  FeatureFlags.isEnabled('remoteResponseProvider') ? AIResponseProvider : LocalResponseProvider
 );
 
 // Estado de "Explicar producto". Sigue el mismo patrón que p360Expanded:
