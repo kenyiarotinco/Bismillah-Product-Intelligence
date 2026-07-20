@@ -12,6 +12,7 @@ Generado como primer MVP público con el **DULCE Engineering System**.
 
 - [Módulos](#módulos)
 - [Perfiles de despliegue](#perfiles-de-despliegue)
+- [Identidad visual](#identidad-visual)
 - [Estructura del repositorio](#estructura-del-repositorio)
 - [Cómo ejecutarlo](#cómo-ejecutarlo)
 - [Regenerar el dataset sintético](#regenerar-el-dataset-sintético)
@@ -65,6 +66,14 @@ node scripts/import-commercial-data.js <ruta-a-products.js-del-pipeline-comercia
 
 Ver [ARCHITECTURE.md](docs/ARCHITECTURE.md#commercial-data-provider-fase-3-paso-1) para el detalle de esa arquitectura. Formato exacto: [`production.example/commercial-data.js.example`](production.example/commercial-data.js.example).
 
+## Identidad visual
+
+El logo oficial (`assets/img/logo.svg`) es un vector de 6.985 `<path>` — un trazado desde raster, no un diseño vectorial limpio — que **cuelga el compositor de cualquier navegador** si se referencia directamente en una página (confirmado de forma reproducible: captura de pantalla/pintado bloqueado más de 30s, incluso con el elemento en `display:none`). Por eso:
+
+- **`logo.svg` es el master oficial**, intacto, byte a byte igual al que provee la marca. Vive en el repo como fuente de verdad y para regenerar derivados — **nunca se referencia desde ningún `<link>`/`<img>`**.
+- **`logo-optimized.svg`** es un derivado técnico (SVGO, `mergePaths` + precisión reducida) que reduce el archivo a ~900KB/4.209 paths sin cambiar ni un color ni la forma — documental, tampoco usado en el DOM (seguía siendo demasiado pesado para un render fluido).
+- **Todo lo que la aplicación sirve realmente es rasterizado** desde el master con `sharp`/`librsvg` (renderiza el master completo en ~360ms, contra el compositor de un navegador que nunca terminó): `logo-web.webp` (header/nav), `favicon-32.png`/`favicon-16.png` (favicon), `apple-touch-icon.png` (iOS) y `og-image.png` (Open Graph). El master no tiene fondo transparente — es una placa cuadrada verde con el emblema dorado, borde a borde — así que los derivados se exportan fieles a esa forma, sin inventar transparencia que el arte original no tiene.
+
 ## Estructura del repositorio
 
 SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin build step. La lógica de la aplicación y el sistema de diseño son 100 % compartidos entre perfiles; solo cambia el archivo de datos. El frontend sigue sin backend — la única excepción es `server/` (Fase 4), un proxy Node opcional y desactivado por defecto, necesario únicamente para que una API key de IA nunca viaje al navegador (ver `docs/ARCHITECTURE.md`, sección "Gemini Proxy Server").
@@ -75,6 +84,13 @@ SPA de un solo archivo HTML por perfil (vanilla JS + Canvas), sin build step. La
 ├── assets/
 │   ├── css/
 │   │   └── styles.css             # Sistema de diseño compartido (Space Grotesk / IBM Plex)
+│   ├── img/                       # Identidad visual (RC1) — ver "Identidad visual" más abajo
+│   │   ├── logo.svg                 # MASTER oficial, intacto — nunca referenciado en el DOM (6.985 paths, 4.2MB: cuelga el compositor del navegador)
+│   │   ├── logo-optimized.svg       # Derivado técnico/documental (SVGO, mismos colores/forma) — tampoco usado en el DOM
+│   │   ├── logo-web.webp            # Derivado rasterizado — el que SÍ se usa en el header/nav (256×256, listo para retina)
+│   │   ├── favicon-32.png / favicon-16.png  # Favicons rasterizados
+│   │   ├── apple-touch-icon.png     # 180×180, para iOS
+│   │   └── og-image.png             # 1200×1200, para Open Graph
 │   └── js/
 │       ├── app.js                 # Lógica de la aplicación (vistas, búsqueda, motores, canvas, orquestación del Copilot)
 │       ├── context-builder.js     # Construye el contexto de producto para el AI Sales Copilot (sin IA, sin red)
