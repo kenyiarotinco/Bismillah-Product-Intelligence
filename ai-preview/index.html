@@ -57,7 +57,9 @@
 <!-- Este perfil solo activa el transporte remoto; no contiene credenciales. -->
 <script>
 const FEATURE_FLAGS = { remoteResponseProvider: true };
-const REMOTE_PROVIDER_CONFIG = { endpoint: '/api/copilot' };
+// El cliente espera 5s más que el proxy (25s) para que el backend sea quien
+// clasifique y registre cualquier timeout antes de activar el fallback local.
+const REMOTE_PROVIDER_CONFIG = { endpoint: '/api/copilot', timeoutMs: 30000 };
 </script>
 <script src="../assets/js/data.js"></script>
 <script src="../assets/js/context-builder.js"></script>

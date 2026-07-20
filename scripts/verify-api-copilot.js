@@ -186,7 +186,7 @@ async function main() {
     // Sustituye temporalmente el fetch bloqueado-por-defecto de esta suite
     // por uno que cuelga a propósito pero SÍ respeta la señal de aborto —
     // igual disciplina que ya usa scripts/verify-gemini-proxy-server.js
-    // para probar el timeout sin gastar 15s reales de espera.
+    // para probar el timeout sin gastar 25s reales de espera.
     const hangingFetch = global.fetch;
     global.fetch = (url, opts) => new Promise((resolve, reject) => {
       if (opts && opts.signal) {

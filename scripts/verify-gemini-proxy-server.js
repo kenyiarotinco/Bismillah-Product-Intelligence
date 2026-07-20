@@ -23,7 +23,8 @@ const path = require('path');
 const vm = require('vm');
 const {
   startServer, createRequestHandler, callGemini, buildPrompt, isOriginAllowed, SKILL_SCHEMAS,
-  validateGroundedSkuUsage, validateAvailabilityConsistency, DEFAULT_MODEL,
+  validateGroundedSkuUsage, validateAvailabilityConsistency, classifyGeminiError, observeCopilotRequest,
+  DEFAULT_MODEL, DEFAULT_TIMEOUT_MS,
 } = require('../server/gemini-proxy-server.js');
 
 const ROOT = path.join(__dirname, '..');
@@ -54,7 +55,8 @@ function fakeGeminiOk(skill, extraFields = {}) {
 }
 
 async function withServer(options, fn) {
-  const server = await startServer({ ...options, port: 0, silent: true });
+  const logger = options.logger || { info() {}, warn() {} };
+  const server = await startServer({ ...options, logger, port: 0, silent: true });
   try {
     const port = server.address().port;
     return await fn(`http://127.0.0.1:${port}`, port);
@@ -63,10 +65,107 @@ async function withServer(options, fn) {
   }
 }
 
+function capturingLogger() {
+  const entries = [];
+  return {
+    entries,
+    info(message) { entries.push({ level: 'info', message }); },
+    warn(message) { entries.push({ level: 'warn', message }); },
+  };
+}
+
+function parseObservation(entry) {
+  assert(entry && /^\[copilot\] /.test(entry.message), 'el log debe usar el prefijo [copilot]');
+  return JSON.parse(entry.message.replace(/^\[copilot\] /, ''));
+}
+
 async function main() {
   await check('DEFAULT_MODEL usa el reemplazo vigente de Gemini 2.0 Flash', () => {
     assert(DEFAULT_MODEL === 'gemini-3.5-flash',
       `se esperaba gemini-3.5-flash, se obtuvo ${DEFAULT_MODEL}`);
+  });
+
+  await check('DEFAULT_TIMEOUT_MS concede 25s al backend y queda por debajo de los 30s del perfil AI Preview', () => {
+    assert(DEFAULT_TIMEOUT_MS === 25000,
+      `se esperaba un timeout backend de 25000ms, se obtuvo ${DEFAULT_TIMEOUT_MS}`);
+    const preview = fs.readFileSync(path.join(ROOT, 'ai-preview', 'index.html'), 'utf8');
+    assert(/timeoutMs:\s*30000/.test(preview), 'ai-preview debe declarar timeoutMs: 30000');
+  });
+
+  await check('classifyGeminiError reduce fallos a categorías operativas sin propagar mensajes', () => {
+    assert(classifyGeminiError(new Error('Gemini API: tiempo de espera agotado (25000ms).')) === 'timeout', 'debería clasificar timeout');
+    assert(classifyGeminiError(new Error('Gemini API respondió 429: detalle sensible')) === 'upstream_http', 'debería clasificar HTTP upstream');
+    assert(classifyGeminiError(new Error('Gemini API: fallo de red — ENOTFOUND')) === 'network', 'debería clasificar fallo de red');
+    assert(classifyGeminiError(new Error('Gemini API: la respuesta del modelo no es JSON válido')) === 'invalid_response', 'debería clasificar respuesta inválida');
+    assert(classifyGeminiError(new Error('Gemini API: la respuesta del modelo no cumple la forma esperada')) === 'contract_mismatch', 'debería clasificar contrato');
+    assert(classifyGeminiError(new Error('Gemini API: sku no está entre los candidatos')) === 'grounding_rejected', 'debería clasificar grounding');
+    assert(classifyGeminiError(new Error('detalle desconocido')) === 'unknown', 'debería usar unknown como cierre seguro');
+  });
+
+  await check('observabilidad: una comparación simulada con latencia controlada termina en 200 y registra solo metadatos seguros', async () => {
+    const logger = capturingLogger();
+    const response = await fakeGeminiOk('compare-products', {
+      productos: { a: {}, b: {} },
+      similitudes: ['detalle-de-respuesta-no-debe-loguearse'],
+      diferencias: [],
+    })();
+    await withServer({
+      apiKey: 'clave-super-secreta-no-debe-loguearse',
+      timeoutMs: 200,
+      logger,
+      fetchImpl: () => new Promise(resolve => setTimeout(() => resolve(response), 40)),
+    }, async base => {
+      const res = await fetch(`${base}/copilot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          skill: 'compare-products',
+          promptContext: { a: { productKnowledge: { nombre: 'PRODUCTO-PRIVADO-A' } }, b: { productKnowledge: { nombre: 'PRODUCTO-PRIVADO-B' } } },
+        }),
+      });
+      assert(res.status === 200, `la comparación simulada debería responder 200, se obtuvo ${res.status}`);
+    });
+    assert(logger.entries.length === 1, `se esperaba exactamente un evento, se obtuvieron ${logger.entries.length}`);
+    assert(logger.entries[0].level === 'info', 'una respuesta exitosa debe registrarse con nivel info');
+    const event = parseObservation(logger.entries[0]);
+    assert(event.event === 'copilot_request' && event.skill === 'compare-products' && event.outcome === 'success', 'el evento exitoso debe identificar habilidad y resultado');
+    assert(Number.isInteger(event.durationMs) && event.durationMs >= 30, 'el evento debe registrar una duración entera coherente con la latencia simulada');
+    assert(JSON.stringify(Object.keys(event).sort()) === JSON.stringify(['durationMs', 'event', 'outcome', 'skill']), 'el evento exitoso no debe incluir campos adicionales');
+    const serialized = JSON.stringify(logger.entries);
+    assert(!/clave-super-secreta|PRODUCTO-PRIVADO|detalle-de-respuesta/i.test(serialized), 'el log no debe incluir key, PromptContext ni respuesta');
+  });
+
+  await check('observabilidad: un timeout simulado registra category:"timeout" sin filtrar key, PromptContext ni mensaje interno', async () => {
+    const logger = capturingLogger();
+    await withServer({
+      apiKey: 'otra-clave-super-secreta',
+      timeoutMs: 50,
+      logger,
+      fetchImpl: (url, opts) => new Promise((resolve, reject) => {
+        opts.signal.addEventListener('abort', () => reject(new Error('DETALLE-INTERNO-DE-RED')));
+      }),
+    }, async base => {
+      const res = await fetch(`${base}/copilot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ skill: 'compare-products', promptContext: { dato: 'CONTEXTO-PRIVADO' } }),
+      });
+      assert(res.status === 502, `el timeout simulado debería responder 502, se obtuvo ${res.status}`);
+    });
+    assert(logger.entries.length === 1, `se esperaba exactamente un evento, se obtuvieron ${logger.entries.length}`);
+    assert(logger.entries[0].level === 'warn', 'un timeout debe registrarse con nivel warn');
+    const event = parseObservation(logger.entries[0]);
+    assert(event.event === 'copilot_request' && event.skill === 'compare-products' && event.outcome === 'error' && event.category === 'timeout', 'el evento debe clasificar el timeout sin ambigüedad');
+    assert(Number.isInteger(event.durationMs) && event.durationMs >= 40, 'el evento debe registrar la duración hasta el aborto');
+    assert(JSON.stringify(Object.keys(event).sort()) === JSON.stringify(['category', 'durationMs', 'event', 'outcome', 'skill']), 'el evento de error no debe incluir campos adicionales');
+    const serialized = JSON.stringify(logger.entries);
+    assert(!/otra-clave|CONTEXTO-PRIVADO|DETALLE-INTERNO/i.test(serialized), 'el log no debe incluir key, PromptContext ni mensaje interno');
+  });
+
+  await check('observabilidad: un logger defectuoso nunca altera el flujo principal', () => {
+    observeCopilotRequest({ info() { throw new Error('logger no disponible'); } }, 'info', {
+      skill: 'compare-products', outcome: 'success', durationMs: 10,
+    });
   });
 
   await check('gemini-proxy-server.js referencia fetch/http real (integración genuina, no otro placeholder) y no referencia SDKs de otros proveedores', () => {

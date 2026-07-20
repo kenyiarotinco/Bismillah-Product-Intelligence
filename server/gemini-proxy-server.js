@@ -59,7 +59,10 @@ const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models
 // configurado degrade silenciosamente todas las solicitudes al fallback local.
 const DEFAULT_MODEL = 'gemini-3.5-flash';
 const DEFAULT_PORT = 8787;
-const DEFAULT_TIMEOUT_MS = 15000;
+// La comparación envía dos PromptContext y puede tardar más que las demás
+// habilidades. 25s mantiene una ventana finita y deja margen suficiente al
+// perfil AI Preview, cuyo timeout de cliente es deliberadamente mayor (30s).
+const DEFAULT_TIMEOUT_MS = 25000;
 const COPILOT_PATH = '/copilot';
 
 /**
@@ -190,7 +193,38 @@ function isOriginAllowed(origin, allowedOrigin) {
   return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
 }
 
-function createRequestHandler({ apiKey, model, timeoutMs, allowedOrigin, fetchImpl, expectedPath = COPILOT_PATH }) {
+/**
+ * Convierte errores internos en categorías operativas seguras para logs.
+ * Deliberadamente NO devuelve `err.message`: ese texto puede contener el
+ * cuerpo de error del proveedor y no pertenece a la telemetría mínima.
+ */
+function classifyGeminiError(err) {
+  const message = err && typeof err.message === 'string' ? err.message : '';
+  if (/tiempo de espera agotado/i.test(message)) return 'timeout';
+  if (/Gemini API respondió \d{3}/i.test(message)) return 'upstream_http';
+  if (/fallo de red/i.test(message)) return 'network';
+  if (/no es JSON válido|no trae texto/i.test(message)) return 'invalid_response';
+  if (/no cumple la forma esperada/i.test(message)) return 'contract_mismatch';
+  if (/no está entre los candidatos|reportó disponibilidad/i.test(message)) return 'grounding_rejected';
+  return 'unknown';
+}
+
+/**
+ * Emite una sola línea JSON apta para Vercel Runtime Logs. Solo incluye
+ * metadatos técnicos mínimos: nunca PromptContext, respuestas,
+ * nombres/SKU, mensajes de error ni credenciales.
+ */
+function observeCopilotRequest(logger, level, fields) {
+  if (!logger || typeof logger[level] !== 'function') return;
+  try {
+    logger[level](`[copilot] ${JSON.stringify({ event: 'copilot_request', ...fields })}`);
+  } catch (_) {
+    // La observabilidad es best-effort: nunca debe convertir una respuesta
+    // válida de Gemini en un 502 ni impedir el fallback ante un error real.
+  }
+}
+
+function createRequestHandler({ apiKey, model, timeoutMs, allowedOrigin, fetchImpl, expectedPath = COPILOT_PATH, logger = console }) {
   return async function handleRequest(req, res) {
     const origin = req.headers.origin;
     if (isOriginAllowed(origin, allowedOrigin)) {
@@ -254,11 +288,23 @@ function createRequestHandler({ apiKey, model, timeoutMs, allowedOrigin, fetchIm
       return;
     }
 
+    const startedAt = Date.now();
     try {
       const result = await callGemini({ skill, promptContext, apiKey, model, timeoutMs, fetchImpl });
+      observeCopilotRequest(logger, 'info', {
+        skill,
+        outcome: 'success',
+        durationMs: Math.max(0, Date.now() - startedAt),
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (err) {
+      observeCopilotRequest(logger, 'warn', {
+        skill,
+        outcome: 'error',
+        category: classifyGeminiError(err),
+        durationMs: Math.max(0, Date.now() - startedAt),
+      });
       res.writeHead(502, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message }));
     }
@@ -272,8 +318,9 @@ function startServer(options = {}) {
   const timeoutMs = options.timeoutMs || Number(process.env.GEMINI_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
   const allowedOrigin = options.allowedOrigin !== undefined ? options.allowedOrigin : process.env.ALLOWED_ORIGIN;
   const fetchImpl = options.fetchImpl || fetch;
+  const logger = options.logger === undefined ? console : options.logger;
 
-  const server = http.createServer(createRequestHandler({ apiKey, model, timeoutMs, allowedOrigin, fetchImpl }));
+  const server = http.createServer(createRequestHandler({ apiKey, model, timeoutMs, allowedOrigin, fetchImpl, logger }));
   return new Promise(resolve => {
     server.listen(port, () => {
       if (!options.silent) {
@@ -297,6 +344,8 @@ module.exports = {
   isOriginAllowed,
   validateGroundedSkuUsage,
   validateAvailabilityConsistency,
+  classifyGeminiError,
+  observeCopilotRequest,
   SKILL_SCHEMAS,
   DEFAULT_MODEL,
   DEFAULT_PORT,

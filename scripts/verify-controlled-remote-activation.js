@@ -80,6 +80,7 @@ async function main() {
     assert(/src="\.\.\/assets\/js\/data\.js"/.test(preview), 'ai-preview debe cargar el dataset sintético data.js');
     assert(/remoteResponseProvider:\s*true/.test(preview), 'ai-preview debe activar remoteResponseProvider');
     assert(/endpoint:\s*['"]\/api\/copilot['"]/.test(preview), 'ai-preview debe usar el endpoint relativo /api/copilot');
+    assert(/timeoutMs:\s*30000/.test(preview), 'ai-preview debe esperar 30s para que el timeout de 25s del backend se registre antes del fallback');
     const app = fs.readFileSync(APP_FILE, 'utf8');
     assert(/FeatureFlags\.isEnabled\('remoteResponseProvider'\)\s*\?\s*AIResponseProvider\s*:\s*LocalResponseProvider/.test(app),
       'app.js debe seleccionar AIResponseProvider solo cuando el flag esté activo');
